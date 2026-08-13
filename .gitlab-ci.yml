@@ -1,0 +1,47 @@
+stages:
+  - test
+  - build
+  - docker
+
+variables:
+  GO_VERSION: "1.22"
+  BINARY_NAME: "harness"
+
+unit-test:
+  stage: test
+  image: golang:${GO_VERSION}-alpine
+  before_script:
+    - apk add --no-cache make
+  script:
+    - go mod tidy
+    - go vet ./...
+    - go test ./... -v -count=1
+  coverage: '/\s+coverage:\s+(\d+\.\d+)%/'
+  artifacts:
+    paths:
+      - coverage.*
+    expire_in: 30 days
+
+build-binary:
+  stage: build
+  image: golang:${GO_VERSION}-alpine
+  script:
+    - go mod tidy
+    - go build -ldflags="-s -w" -o ${BINARY_NAME} ./cmd/harness
+  artifacts:
+    paths:
+      - ${BINARY_NAME}
+    expire_in: 30 days
+  only:
+    - main
+
+docker-build:
+  stage: docker
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker build -t ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA} .
+    - docker tag ${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA} ${CI_REGISTRY_IMAGE}:latest
+  only:
+    - main

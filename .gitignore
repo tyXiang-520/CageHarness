@@ -1,0 +1,33 @@
+# Binaries
+/harness
+build/
+
+# Environment files
+.env
+.env.local
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Harness runtime
+.harness/
+
+# Dependencies
+vendor/
+
+# Logs
+*.log
+
+# Test binaries
+*.test
+*.out
+
+# Coverage
+coverage.*

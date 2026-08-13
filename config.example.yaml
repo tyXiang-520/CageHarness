@@ -1,0 +1,31 @@
+# LLM 配置
+llm:
+  endpoint: "https://api.openai.com/v1"
+  model: "gpt-4o"
+  max_tokens: 4096
+  timeout: 60s
+
+# Agent 配置
+agent:
+  max_iterations: 10
+  run_timeout: 300s
+
+# 治理配置（★ 深入维度）
+governance:
+  enabled: true
+  hitl_timeout: 300s
+  tool_timeout: 30s
+  workspace_root: "."
+  rules:
+    - GIT-001
+    - GIT-002
+    - GIT-003
+    - SHELL-001
+    - SHELL-002
+    - FILE-001
+    - NET-001
+    - PATH-001
+
+# WebUI 配置
+web:
+  port: 8080
