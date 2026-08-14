@@ -142,7 +142,7 @@ jobs:
 
             ### 🔗 Links
 
-            - [在线 Demo](https://your-scf-url.cos.ap-hongkong.myqcloud.com)
+            - [在线 Demo](https://1468764621-lg1ve1o8np.ap-hongkong.tencentscf.com)
             - [源代码](https://github.com/${{ github.repository }})
             - [SPEC](https://github.com/${{ github.repository }}/blob/main/SPEC.md)
           files: release/*

@@ -19,7 +19,7 @@ CageHarness 是南京大学 AI4SE 课程期末项目。它从零实现了一个 
 | Linux (arm64) | `harness-linux-arm64` | [下载](https://github.com/tyXiang-520/CageHarness/releases/latest/download/harness-linux-arm64) |
 | Docker | `ghcr.io/tyxiang-520/cageharness` | `docker pull ghcr.io/tyxiang-520/cageharness:latest` |
 
-🌐 **在线 Demo**：[SCF 香港节点](https://your-scf-url.cos.ap-hongkong.myqcloud.com)（部署后更新链接）
+🌐 **在线 Demo**：[SCF 香港节点](https://1468764621-lg1ve1o8np.ap-hongkong.tencentscf.com)
 
 ---
 
