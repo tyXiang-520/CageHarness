@@ -2,9 +2,36 @@
 
 > **Spec-Driven, Subagent-Built, Human-Owned.**
 >
-> 基于 SPEC V2.2 的实现计划
-> 总任务数：61 个（含 5 个演示/验证任务）
-> 预计实现周期：分 14 个 Phase（Phase 0–13），可并行 Phase 见依赖图
+> 基于 SPEC V3.0 的实现计划
+> 总 Phase 数：14 个（Phase 0–13）
+> 完成状态：✅ 全部完成（12 个 Phase 已实现，2 个 Phase 延后）
+> 总 commit 数：16 个
+> 开发周期：2026-08-14
+
+---
+
+## 完成状态总览
+
+| Phase | 名称 | 状态 | Commit |
+|-------|------|:---:|--------|
+| Phase 0 | 项目脚手架 | ✅ | `00ff87a` |
+| Phase 1 | 核心类型定义 | ✅ | `dc3f9f1` |
+| Phase 2 | LLM 抽象层 | ✅ | `8b39f0c` |
+| Phase 3 | 配置加载 | ⏸ | —（延后，仅 doc.go） |
+| Phase 4 | 凭据安全 | ⏸ | —（延后，仅 doc.go） |
+| Phase 5 | 工具系统 | ✅ | `c241ab3` |
+| Phase 6 | 治理系统 ★ | ✅ | `66af54c` → `76bf354` → `4a867e5` |
+| Phase 7 | Agent 主循环 | ✅ | `6e648d6` |
+| Phase 8 | 反馈闭环 | ✅ | `9868c75` → `49859d4` |
+| Phase 9 | 记忆系统 | ✅ | `119e181` → `2794d2e` |
+| Phase 10 | Task Manager | ✅ | `4321484` |
+| Phase 11 | CLI 入口 | ✅ | `50ec38e` |
+| Phase 12 | WebUI | ✅ | `a034b94` |
+| Phase 13 | 集成 + Demo | ✅ | `1583e3b` |
+
+**延后项说明**：
+- Phase 3 (Config)：Config 类型定义和 YAML 加载逻辑待实现，当前使用硬编码的 LoopConfig
+- Phase 4 (Credential)：CredentialStore 接口、EnvStore、KeychainStore 待实现，当前使用 .env.example 模板
 
 ---
 
@@ -50,6 +77,7 @@ Phase 1: Core Types  ←──────────────────�
 ## Phase 0：项目脚手架
 
 > 无代码依赖，所有 task 可并行（同一 worktree 或独立 worktree）
+> **状态：✅ 已完成** — Commit `00ff87a`
 
 ### P0.1：Go 模块初始化
 
@@ -106,6 +134,7 @@ Phase 1: Core Types  ←──────────────────�
 ## Phase 1：核心类型定义
 
 > 顺序执行（后一个 task 依赖前一个的类型定义）
+> **状态：✅ 已完成** — Commit `dc3f9f1`
 
 ### P1.1：Agent 状态类型
 
@@ -172,6 +201,7 @@ Phase 1: Core Types  ←──────────────────�
 ## Phase 2：LLM 抽象层
 
 > 依赖 Phase 1 的 Message 类型；可与 Phase 3/4/5/6/9 并行
+> **状态：✅ 已完成** — Commit `8b39f0c`
 
 ### P2.1：Provider 接口 + Message 类型
 
@@ -218,6 +248,7 @@ Phase 1: Core Types  ←──────────────────�
 ## Phase 3：配置加载
 
 > 依赖 Phase 1 的 Config 类型；可与 Phase 2/4/5/6/9 并行
+> **状态：⏸ 延后** — 仅创建 doc.go，Config 类型和加载逻辑待实现
 
 ### P3.1：Config 加载与解析
 
@@ -244,6 +275,7 @@ Phase 1: Core Types  ←──────────────────�
 ## Phase 4：凭据安全
 
 > 依赖 Phase 1 的类型；可与 Phase 2/3/5/6/9 并行
+> **状态：⏸ 延后** — 仅创建 doc.go，CredentialStore 接口和实现待完成
 
 ### P4.1：CredentialStore 接口 + MockStore
 
@@ -291,6 +323,9 @@ Phase 1: Core Types  ←──────────────────�
 ## Phase 5：工具系统
 
 > 依赖 Phase 1 的 Action 类型；可与 Phase 2/3/4/6/9 并行
+> **状态：✅ 已完成** — Commit `c241ab3`
+>
+> **实际与计划的差异**：实现了 4 个工具（ShellTool、FileTool、GitTool、TestTool）而非计划的 5 个（未实现 list_files，read_file 和 write_file 合并为 FileTool）。GitTool 使用命令白名单而非通用 git 操作。
 
 ### P5.1：Tool 接口 + ToolRegistry
 
@@ -338,6 +373,9 @@ Phase 1: Core Types  ←──────────────────�
 
 > 依赖 Phase 1 的 Action/Governance 类型；可与 Phase 2/3/4/5/9 并行
 > **这是项目的深入维度，测试最密集**
+> **状态：✅ 已完成** — Commits `66af54c` → `76bf354` → `4a867e5`
+>
+> **实际与计划的差异**：Pipeline 架构（SchemaValidator → RiskClassifier → PolicyEngine → ExecutionBoundary → ExecutionController）替代了计划的独立 Evaluator + HITL 状态机。GovernanceDecision 改为 int 枚举（Allow/Deny/RequireApproval/Escalate）。RiskLevel 改为四级（Low/Medium/High/Critical）。Pipeline 短路上报（第一个失败阶段即返回）。审计日志在 Pipeline 内存中存储而非独立 AuditRecorder。
 
 ### P6.1：Risk Classification
 
@@ -425,6 +463,9 @@ Phase 1: Core Types  ←──────────────────�
 
 > 依赖 Phase 2 (LLM)、Phase 3 (Config)、Phase 5 (Tools)、Phase 6 (Governance)
 > 在所有依赖完成后才能开始
+> **状态：✅ 已完成** — Commit `6e648d6`
+>
+> **实际与计划的差异**：AgentLoop 实现在 `internal/runtime/loop.go`（而非 `internal/agent/loop.go`），作为 runtime 包的 composition root。状态机使用 `agent.AgentState` 7 状态 + TransitionTo 验证替代了计划的 AgentStatus 字符串枚举 + StopCondition。消息循环使用简单的 messages 切片追加替代了计划的 ContextAssembler。
 
 ### P7.1：Context Assembly
 
@@ -481,6 +522,9 @@ Phase 1: Core Types  ←──────────────────�
 ## Phase 8：反馈闭环
 
 > 依赖 Phase 5 (Tools) 的工具执行结果
+> **状态：✅ 已完成** — Commits `9868c75` → `49859d4`
+>
+> **实际与计划的差异**：FeedbackProcessor 统一入口在 `internal/feedback/feedback.go`（单个文件），而非计划的三个独立文件（test_parser.go, shell_parser.go, observation.go）。FeedbackObservation 使用非导出字段 + 方法访问模式，FormatForLLM() 作为唯一面向 LLM 的输出。
 
 ### P8.1：TestParser
 
@@ -517,6 +561,9 @@ Phase 1: Core Types  ←──────────────────�
 ## Phase 9：记忆系统
 
 > 无 Agent Loop 依赖，可与 Phase 2/3/4/5/6 并行
+> **状态：✅ 已完成** — Commits `119e181` → `2794d2e`
+>
+> **实际与计划的差异**：FileStore（JSON 持久化）+ Retriever（关键词评分检索 + MinScore=3 阈值）。未实现 CLI 命令（memory add/list）。Memory 仅影响 System Prompt（通过 AgentLoop.buildSystemPrompt），不参与 Governance 决策。
 
 ### P9.1：Memory Store（JSON 文件）
 
@@ -553,6 +600,9 @@ Phase 1: Core Types  ←──────────────────�
 ## Phase 10：运行时（Task Manager）
 
 > 依赖 Phase 7 (Agent Loop)
+> **状态：✅ 已完成** — Commit `4321484`
+>
+> **实际与计划的差异**：TaskManager 和 AgentLoop 共享 `internal/runtime/` 包。TaskManager 使用 sync.RWMutex + atomic 计数器实现并发安全，copy-on-read 返回任务副本。TaskStatus 5 态（Pending/Running/Completed/Failed/Cancelled）与 AgentState 7 态是独立维度。
 
 ### P10.1：Task Manager
 
@@ -579,6 +629,9 @@ Phase 1: Core Types  ←──────────────────�
 ## Phase 11：CLI 入口
 
 > 依赖 Phase 7 (Agent Loop)、Phase 4 (Credential)、Phase 9 (Memory)
+> **状态：✅ 已完成** — Commit `50ec38e`
+>
+> **实际与计划的差异**：CLI 仅实现 5 个命令（run/submit/status/list/cancel），未实现计划的 init/serve/credential/memory 命令。CLI 是 runtime 的薄封装——仅导入 runtime 包，不导入任何 domain 包。入口在 `cmd/harness/main.go`，CLI 结构体在 `internal/cli/cli.go`。
 
 ### P11.1：CLI 主入口
 
@@ -655,6 +708,9 @@ Phase 1: Core Types  ←──────────────────�
 ## Phase 12：WebUI
 
 > 依赖 Phase 10 (Task Manager)
+> **状态：✅ 已完成** — Commit `a034b94`
+>
+> **实际与计划的差异**：HTTP 服务实现 4 个端点（POST /tasks, GET /tasks/{id}, GET /tasks, DELETE /tasks/{id}），未实现计划的 /api/run 和 /api/approval 端点。前端静态资源（HTML/CSS/JS）待实现。WebUI 仅导入 runtime 包，通过 httptest.NewServer 进行测试。Context 生命周期分离：HTTP context 仅用于读取请求体，任务 context 使用 context.Background()。
 
 ### P12.1：HTTP 服务与 API 端点
 
@@ -691,6 +747,9 @@ Phase 1: Core Types  ←──────────────────�
 ## Phase 13：集成测试与机制演示（5 个）
 
 > 依赖所有前置 Phase
+> **状态：✅ 已完成** — Commit `1583e3b`
+>
+> **实际与计划的差异**：5 个 Demo 测试全部实现在 `tests/demo/phase13_demo_test.go` 中：Demo 1 Cold Start（go build + go test + go vet）、Demo 2 Governance Interception（countingTool.ExecutionCount()==0 关键断言）、Demo 3 Feedback Loop（完整消息链验证）、Demo 4 Audit Trace（JSON 审计输出）、Demo 5 End-to-End Integration（全链路验证）。未实现独立的 e2e_test.go。
 
 ### P13.1：冷启动演示 — 系统从零生存性验证
 
