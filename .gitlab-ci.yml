@@ -4,7 +4,7 @@ stages:
   - docker
 
 variables:
-  GO_VERSION: "1.22"
+  GO_VERSION: "1.26"
   BINARY_NAME: "harness"
 
 unit-test:
