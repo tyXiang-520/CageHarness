@@ -57,7 +57,9 @@ func (c *RiskClassifier) Classify(action protocol.Action) StageResult {
 	reason := fmt.Sprintf("action type %q classified as %s", action.Type, risk)
 
 	passed := risk != RiskLevelCritical
-	shouldEscalate := risk == RiskLevelHigh
+	// High risk triggers HITL (RequireApproval), not escalation.
+	// Escalation is reserved for resource-intensive operations detected by ExecutionController.
+	shouldEscalate := false
 
 	return StageResult{
 		StageName:      "risk",
