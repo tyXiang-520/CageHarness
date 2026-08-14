@@ -41,15 +41,33 @@ func NewServer(tm *runtime.TaskManager, loop *runtime.AgentLoop) *Server {
 // Handler returns the HTTP handler for the server.
 // Routes:
 //
-//	POST   /tasks         — Submit a task asynchronously
-//	GET    /tasks/{id}    — Get task status
-//	GET    /tasks         — List all tasks (when no id suffix)
-//	DELETE /tasks/{id}    — Cancel a task
+//	GET    /               — WebUI (embedded HTML)
+//	POST   /tasks          — Submit a task asynchronously
+//	GET    /tasks/{id}     — Get task status
+//	GET    /tasks          — List all tasks (when no id suffix)
+//	DELETE /tasks/{id}     — Cancel a task
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/tasks", s.handleTasks)
 	mux.HandleFunc("/tasks/", s.handleTaskByID)
 	return mux
+}
+
+// handleIndex serves the embedded WebUI HTML page.
+func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexHTML)
+}
+
+// Start begins listening on the given address and serving HTTP requests.
+// It blocks until the server is stopped. Use in a goroutine for non-blocking start.
+func (s *Server) Start(addr string) error {
+	return http.ListenAndServe(addr, s.Handler())
 }
 
 // handleTasks handles requests to /tasks (collection endpoint).

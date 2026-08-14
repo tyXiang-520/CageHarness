@@ -10,6 +10,7 @@ import (
 	"github.com/tyXiang-520/CageHarness/internal/llm"
 	"github.com/tyXiang-520/CageHarness/internal/runtime"
 	"github.com/tyXiang-520/CageHarness/internal/tools"
+	"github.com/tyXiang-520/CageHarness/internal/web"
 )
 
 func main() {
@@ -99,6 +100,21 @@ func main() {
 		}
 		fmt.Printf("Task %s cancelled.\n", os.Args[2])
 
+	case "serve":
+		port := "8080"
+		if len(os.Args) >= 3 {
+			port = os.Args[2]
+		}
+		addr := ":" + port
+		srv := web.NewServer(tm, loop)
+		fmt.Printf("\n  CageHarness WebUI starting at http://localhost%s\n\n", addr)
+		fmt.Println("  Governance Pipeline: Schema → Risk → Policy → Boundary → Control")
+		fmt.Println("  Press Ctrl+C to stop\n")
+		if err := srv.Start(addr); err != nil {
+			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+			os.Exit(1)
+		}
+
 	default:
 		printUsage()
 		os.Exit(1)
@@ -113,5 +129,6 @@ Usage:
   harness submit  <task>       Submit a task asynchronously
   harness status  <task-id>    Check task status
   harness list                 List all tasks
-  harness cancel  <task-id>    Cancel a running task`)
+  harness cancel  <task-id>    Cancel a running task
+  harness serve   [port]       Start WebUI server (default :8080)`)
 }
