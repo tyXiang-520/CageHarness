@@ -429,6 +429,93 @@ func TestDemo5_EndToEndIntegration(t *testing.T) {
 }
 
 // =============================================================================
+// Demo 3b: Failure Injection → Feedback → Behavior Change
+// =============================================================================
+//
+// A.6 ② 机制演示：注入一次失败，反馈闭环使 agent 收到反馈并据此改变下一步动作。
+// 断言三点：① 反馈确实回灌（第二次 LLM 调用收到含失败信息的 tool 消息）；
+// ② 下一步动作确实改变（第一轮=工具调用，第二轮=停止并引用失败内容的最终回复）；
+// ③ 全程无真实 LLM，确定性可重复。
+
+// demoFailingTool always returns an error result, simulating an injected failure.
+type demoFailingTool struct{}
+
+func (f *demoFailingTool) Name() string        { return "run-tests" }
+func (f *demoFailingTool) Description() string  { return "runs the test suite (simulated)" }
+func (f *demoFailingTool) Validate(action protocol.Action) error { return nil }
+func (f *demoFailingTool) Execute(action protocol.Action) (protocol.ToolResult, error) {
+	// 注入失败：测试运行器报错
+	return protocol.NewErrorResult(action.ID, "go test failed: FAIL: TestFoo — expected 42, got 0", 1), nil
+}
+
+func TestDemo3b_FailureFeedbackChangesNextAction(t *testing.T) {
+	callCount := 0
+	var secondCallMessages []llm.Message
+
+	mock := llm.NewMockProvider(nil)
+	mock.SetHandler(func(messages []llm.Message) (llm.Response, error) {
+		callCount++
+		if callCount == 1 {
+			// 第一步动作：调用测试工具
+			msg := llm.Message{Role: llm.RoleAssistant, Content: "Let me run the tests first"}
+			msg.WithToolCall("call-fix", "run-tests", `{}`)
+			return llm.NewToolCallResponse("Let me run the tests first", msg.ToolCalls...), nil
+		}
+		// 第二步动作：收到失败反馈后不再调用工具，改为引用失败内容作答
+		secondCallMessages = messages
+		return llm.NewResponse(
+			llm.NewMessage(llm.RoleAssistant, "The test failed: expected 42, got 0. I will fix TestFoo."),
+			llm.FinishReasonStop,
+		), nil
+	})
+
+	govCtx := governance.DefaultGovernanceContext()
+	toolReg := tools.NewRegistry()
+	toolReg.Register(&demoFailingTool{})
+
+	loop := runtime.NewAgentLoop(mock, governance.NewPipeline(govCtx), toolReg, runtime.LoopConfig{
+		MaxIterations: 5,
+		SystemPrompt:  "You are a coding agent.",
+	})
+
+	ctx := context.Background()
+	result, err := loop.Run(ctx, "Run the tests and fix failures")
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// 断言 ①：失败反馈确实回灌给了 LLM（第二次调用包含 tool 消息且内容含失败信息）
+	var sawFailureFeedback bool
+	for _, m := range secondCallMessages {
+		if m.Role == llm.RoleTool && contains(m.Content, "go test failed") {
+			sawFailureFeedback = true
+		}
+	}
+	if !sawFailureFeedback {
+		t.Fatalf("❌ failure feedback was not fed back into the LLM context\nmessages: %v", secondCallMessages)
+	}
+	t.Log("✅ Failure feedback injected into LLM context (tool message contains failure output)")
+
+	// 断言 ②：下一步动作确实改变（最终回复引用了失败信息，而非再次调用工具）
+	if result == "" {
+		t.Error("❌ expected non-empty final result")
+	}
+	if !contains(result, "expected 42, got 0") {
+		t.Errorf("❌ next action did not reflect the feedback; result: %s", result)
+	} else {
+		t.Logf("✅ Next action changed based on feedback: %q", result)
+	}
+
+	if callCount != 2 {
+		t.Errorf("❌ expected 2 LLM calls (tool call → feedback → final), got %d", callCount)
+	} else {
+		t.Log("✅ Deterministic: exactly 2 LLM calls, no real LLM involved")
+	}
+
+	t.Log("✅ Demo 3b PASSED: failure injection → feedback loop → changed next action")
+}
+
+// =============================================================================
 // Helper: verify build artifacts exist
 // =============================================================================
 
