@@ -58,11 +58,12 @@ func NewGovernanceAuth(decisionID, actionHash, actionID string, ttl time.Duratio
 
 // StageResult is the output of a single governance pipeline stage.
 type StageResult struct {
-	StageName    string `json:"stage"`
-	Passed       bool   `json:"passed"`
-	Reason       string `json:"reason,omitempty"`
-	RiskLevel    RiskLevel `json:"risk_level,omitempty"`
-	ShouldEscalate bool   `json:"should_escalate,omitempty"`
+	StageName      string    `json:"stage"`
+	Passed         bool      `json:"passed"`
+	Reason         string    `json:"reason,omitempty"`
+	RiskLevel      RiskLevel `json:"risk_level,omitempty"`
+	ShouldEscalate bool      `json:"should_escalate,omitempty"`
+	ToolName       string    `json:"tool_name,omitempty"`
 }
 
 // PipelineResult is the aggregated result of the governance pipeline.
@@ -71,6 +72,7 @@ type PipelineResult struct {
 	Stages    []StageResult      `json:"stages"`
 	Auth      *GovernanceAuth    `json:"auth,omitempty"`
 	ActionID  string             `json:"action_id"`
+	ToolName  string             `json:"tool_name"`
 	Timestamp time.Time          `json:"timestamp"`
 }
 
@@ -86,7 +88,14 @@ func (pr PipelineResult) RequiresApproval() bool {
 
 // ToAuditEntry converts the pipeline result to an audit log entry.
 func (pr PipelineResult) ToAuditEntry() AuditLogEntry {
-	entry := NewAuditLogEntry(pr.ActionID, pr.Decision, "governance-pipeline")
+	// Determine the maximum risk level from stages
+	maxRisk := RiskLevelLow
+	for _, s := range pr.Stages {
+		if s.RiskLevel > maxRisk {
+			maxRisk = s.RiskLevel
+		}
+	}
+	entry := NewAuditLogEntry(pr.ActionID, pr.ToolName, pr.Decision, maxRisk, "governance-pipeline")
 	details := make(map[string]any)
 	for _, s := range pr.Stages {
 		details[s.StageName] = map[string]any{

@@ -294,6 +294,40 @@ func (a *AgentLoop) Iterations() int {
 	return a.iterations
 }
 
+// RunResult captures the full state of an AgentLoop execution.
+// It is returned by RunWithResult for rich observability.
+type RunResult struct {
+	Text             string              `json:"text"`
+	Error            string              `json:"error,omitempty"`
+	StateTransitions []StateTransition   `json:"state_transitions"`
+	Iterations       int                 `json:"iterations"`
+	Messages         []llm.Message       `json:"-"`
+	AuditLog         []governance.AuditLogEntry `json:"audit_log"`
+}
+
+// RunWithResult executes the main agent loop and returns a rich RunResult
+// containing state transitions, audit log, and other observability data.
+func (a *AgentLoop) RunWithResult(ctx context.Context, task string) RunResult {
+	text, err := a.Run(ctx, task)
+
+	result := RunResult{
+		Text:             text,
+		StateTransitions: a.StateTransitions(),
+		Iterations:       a.Iterations(),
+		Messages:         a.Messages(),
+		AuditLog:         a.governance.AuditLog(),
+	}
+	if err != nil {
+		result.Error = err.Error()
+	}
+	return result
+}
+
+// AuditLog returns the governance audit log from the pipeline.
+func (a *AgentLoop) AuditLog() []governance.AuditLogEntry {
+	return a.governance.AuditLog()
+}
+
 // transition attempts a state transition and records it.
 // If the transition is invalid, it logs the error but does not panic.
 func (a *AgentLoop) transition(next agent.AgentState) {

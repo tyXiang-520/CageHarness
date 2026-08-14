@@ -109,7 +109,7 @@ func main() {
 		srv := web.NewServer(tm, loop)
 		fmt.Printf("\n  CageHarness WebUI starting at http://localhost%s\n\n", addr)
 		fmt.Println("  Governance Pipeline: Schema → Risk → Policy → Boundary → Control")
-		fmt.Println("  Press Ctrl+C to stop\n")
+		fmt.Println("  Press Ctrl+C to stop")
 		if err := srv.Start(addr); err != nil {
 			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
 			os.Exit(1)

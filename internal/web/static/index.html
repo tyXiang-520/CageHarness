@@ -16,6 +16,7 @@
     --red: #f85149;
     --yellow: #d2991d;
     --purple: #a371f7;
+    --orange: #d97706;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -23,9 +24,10 @@
     background: var(--bg); color: var(--text); line-height: 1.5;
     min-height: 100vh;
   }
-  .container { max-width: 900px; margin: 0 auto; padding: 24px; }
+  .container { max-width: 1000px; margin: 0 auto; padding: 24px; }
   header {
     padding: 24px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px;
+    display: flex; justify-content: space-between; align-items: flex-start;
   }
   header h1 { font-size: 1.5rem; color: var(--accent); }
   header p { color: var(--dim); font-size: 0.9rem; margin-top: 4px; }
@@ -35,6 +37,7 @@
     border-radius: 8px; padding: 20px; margin-bottom: 16px;
   }
   .card h2 { font-size: 1.1rem; margin-bottom: 12px; color: var(--accent); }
+  .card h3 { font-size: 0.95rem; margin-bottom: 8px; color: var(--text); }
 
   form { display: flex; gap: 8px; }
   input[type="text"] {
@@ -51,12 +54,19 @@
   button:hover { opacity: 0.85; }
   button.danger { background: var(--red); }
   button.small { padding: 4px 12px; font-size: 0.8rem; }
+  button.ghost {
+    background: transparent; border: 1px solid var(--border); color: var(--accent);
+    padding: 4px 12px; font-size: 0.8rem;
+  }
 
   .task-list { list-style: none; }
   .task-item {
     display: flex; align-items: center; gap: 12px; padding: 12px;
-    border-bottom: 1px solid var(--border);
+    border-bottom: 1px solid var(--border); cursor: pointer;
+    transition: background 0.15s;
   }
+  .task-item:hover { background: rgba(88,166,255,0.05); }
+  .task-item.active { background: rgba(88,166,255,0.08); }
   .task-item:last-child { border-bottom: none; }
   .task-id {
     font-family: 'SF Mono', 'Cascadia Code', monospace;
@@ -86,15 +96,73 @@
     padding: 2px 8px; border-radius: 10px; margin-left: 8px;
   }
   .badge-governance { background: rgba(163,113,247,0.15); color: var(--purple); }
+  .badge-low { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-medium { background: rgba(210,153,29,0.15); color: var(--yellow); }
+  .badge-high { background: rgba(248,81,73,0.15); color: var(--red); }
+  .badge-critical { background: rgba(248,81,73,0.25); color: var(--red); font-weight: 700; }
+
+  /* Governance Detail Panel */
+  .detail-panel { display: none; }
+  .detail-panel.visible { display: block; }
+
+  .timeline { position: relative; padding-left: 20px; margin: 8px 0; }
+  .timeline::before {
+    content: ''; position: absolute; left: 6px; top: 0; bottom: 0;
+    width: 2px; background: var(--border);
+  }
+  .timeline-entry {
+    position: relative; padding: 6px 0 6px 16px; font-size: 0.85rem;
+  }
+  .timeline-entry::before {
+    content: ''; position: absolute; left: -16px; top: 12px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
+  }
+  .timeline-entry.deny::before { background: var(--red); }
+  .timeline-entry.approve::before { background: var(--green); }
+  .timeline-entry.escalate::before { background: var(--orange); }
+  .timeline-meta { color: var(--dim); font-size: 0.8rem; }
+
+  .audit-card {
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px; margin-bottom: 8px; background: var(--bg);
+  }
+  .audit-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  }
+  .audit-header .tool-name {
+    font-family: 'SF Mono', 'Cascadia Code', monospace;
+    color: var(--accent); font-size: 0.85rem;
+  }
+  .stage-list { font-size: 0.8rem; }
+  .stage-row {
+    display: flex; align-items: center; gap: 8px; padding: 3px 0;
+  }
+  .stage-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  }
+  .stage-dot.pass { background: var(--green); }
+  .stage-dot.fail { background: var(--red); }
+  .stage-name { color: var(--dim); min-width: 90px; }
+  .stage-reason { color: var(--text); }
+
+  .flex-row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .flex-col { flex: 1; min-width: 280px; }
 
   .footer { text-align: center; color: var(--dim); font-size: 0.8rem; padding: 24px 0; }
+  .highlight { color: var(--purple); font-weight: 600; }
 </style>
 </head>
 <body>
 <div class="container">
   <header>
-    <h1>🛡️ CageHarness</h1>
-    <p>AI4SE Coding Agent Harness — Governance-driven, zero-dependency, TDD-built</p>
+    <div>
+      <h1>🛡️ CageHarness</h1>
+      <p>AI4SE Coding Agent Harness — Governance-driven, zero-dependency, TDD-built</p>
+    </div>
+    <div style="text-align:right;font-size:0.8rem;color:var(--dim)">
+      <span class="badge badge-governance">Governance ★</span>
+      <div style="margin-top:4px">Schema → Risk → Policy → Boundary → Control</div>
+    </div>
   </header>
 
   <div class="card">
@@ -106,10 +174,21 @@
   </div>
 
   <div class="card">
-    <h2>Tasks <span class="badge badge-governance">Governance ★</span></h2>
+    <h2>Tasks <span class="badge badge-governance">Click for Governance Details</span></h2>
     <ul class="task-list" id="task-list">
       <li class="empty">No tasks yet. Submit a task above to get started.</li>
     </ul>
+  </div>
+
+  <!-- Governance Detail Panel (shown when a task is clicked) -->
+  <div class="detail-panel" id="detail-panel">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 id="detail-title">Governance Details</h2>
+        <button class="ghost" onclick="closeDetail()">✕ Close</button>
+      </div>
+      <div id="detail-content"></div>
+    </div>
   </div>
 
   <div class="footer">
@@ -120,6 +199,7 @@
 <script>
 const API = '/tasks';
 let refreshTimer = null;
+let selectedTaskId = null;
 
 document.getElementById('task-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -162,6 +242,19 @@ function statusClass(status) {
   return 'status-' + (status || 'pending');
 }
 
+function riskBadge(level) {
+  if (!level) return '';
+  const cls = 'badge badge-' + level;
+  return `<span class="${cls}">${level.toUpperCase()}</span>`;
+}
+
+function decisionBadge(decision) {
+  const map = {
+    allow: 'badge-low', deny: 'badge-critical', require_approval: 'badge-high', escalate: 'badge-medium'
+  };
+  return `<span class="badge ${map[decision] || ''}">${decision.replace(/_/g,' ').toUpperCase()}</span>`;
+}
+
 function renderTasks(tasks) {
   const list = document.getElementById('task-list');
   if (!tasks || tasks.length === 0) {
@@ -171,12 +264,12 @@ function renderTasks(tasks) {
 
   list.innerHTML = tasks.map(t => `
     <li>
-      <div class="task-item">
+      <div class="task-item ${t.id === selectedTaskId ? 'active' : ''}" onclick="selectTask('${esc(t.id)}')">
         <span class="task-id">${esc(t.id)}</span>
         <span class="task-cmd">${esc(t.task)}</span>
         <span class="task-status ${statusClass(t.status)}">${esc(t.status)}</span>
         ${t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled' ? '' :
-          `<button class="small danger" onclick="cancelTask('${esc(t.id)}')">Cancel</button>`}
+          `<button class="small danger" onclick="event.stopPropagation();cancelTask('${esc(t.id)}')">Cancel</button>`}
       </div>
       ${t.result ? `<div class="task-result">${esc(t.result)}</div>` : ''}
       ${t.error ? `<div class="task-result task-error">${esc(t.error)}</div>` : ''}
@@ -191,6 +284,129 @@ function renderTasks(tasks) {
     clearInterval(refreshTimer);
     refreshTimer = null;
   }
+
+  // Refresh detail panel if selected task is still visible
+  if (selectedTaskId) {
+    const sel = tasks.find(t => t.id === selectedTaskId);
+    if (sel) renderDetail(sel);
+  }
+}
+
+function selectTask(id) {
+  selectedTaskId = id;
+  fetchTasks(); // re-render to highlight
+
+  // Fetch single task to get run_result details
+  fetch(API + '/' + id)
+    .then(r => r.json())
+    .then(t => renderDetail(t))
+    .catch(err => console.error('selectTask:', err));
+}
+
+function closeDetail() {
+  selectedTaskId = null;
+  document.getElementById('detail-panel').classList.remove('visible');
+  fetchTasks();
+}
+
+function renderDetail(task) {
+  const panel = document.getElementById('detail-panel');
+  const content = document.getElementById('detail-content');
+  const title = document.getElementById('detail-title');
+
+  panel.classList.add('visible');
+  title.textContent = 'Governance Details — ' + task.id;
+
+  if (!task.run_result) {
+    content.innerHTML = '<p style="color:var(--dim)">Task is still running. Governance data will appear here when the task completes.</p>';
+    return;
+  }
+
+  const rr = task.run_result;
+  let html = '';
+
+  // Summary stats
+  html += `<div class="flex-row" style="margin-bottom:16px">
+    <div style="flex:1"><span style="color:var(--dim)">Iterations:</span> <strong>${rr.iterations}</strong></div>
+    <div style="flex:1"><span style="color:var(--dim)">State Transitions:</span> <strong>${rr.state_transitions ? rr.state_transitions.length : 0}</strong></div>
+    <div style="flex:1"><span style="color:var(--dim)">Audit Entries:</span> <strong>${rr.audit_log ? rr.audit_log.length : 0}</strong></div>
+  </div>`;
+
+  if (rr.error) {
+    html += `<div class="task-error" style="padding:8px;margin-bottom:12px;background:var(--bg);border-radius:4px">Error: ${esc(rr.error)}</div>`;
+  }
+
+  // Layout: two columns
+  html += '<div class="flex-row">';
+
+  // Left: State Transitions (Action Trace)
+  html += '<div class="flex-col"><div class="card"><h3>🔍 Action Trace</h3>';
+  if (rr.state_transitions && rr.state_transitions.length > 0) {
+    html += '<div class="timeline">';
+    for (const st of rr.state_transitions) {
+      html += `<div class="timeline-entry">
+        <span style="color:var(--accent)">${esc(st.to)}</span>
+        <span style="color:var(--dim);margin-left:10px">← ${esc(st.from)}</span>
+        <div class="timeline-meta">${esc(st.timestamp)}</div>
+      </div>`;
+    }
+    html += '</div>';
+  } else {
+    html += '<p style="color:var(--dim)">No state transitions recorded.</p>';
+  }
+  html += '</div></div>';
+
+  // Right: Governance Audit Log
+  html += '<div class="flex-col"><div class="card"><h3>📋 Governance Audit Trail</h3>';
+  if (rr.audit_log && rr.audit_log.length > 0) {
+    for (const entry of rr.audit_log) {
+      html += `<div class="audit-card">
+        <div class="audit-header">
+          <span class="tool-name">${esc(entry.tool_name || 'unknown')}</span>
+          ${decisionBadge(entry.decision)}
+          ${riskBadge(entry.risk_level)}
+          <span style="color:var(--dim);font-size:0.75rem;margin-left:auto">${esc(entry.timestamp)}</span>
+        </div>`;
+
+      // Show pipeline stages from details
+      if (entry.details && Object.keys(entry.details).length > 0) {
+        html += '<div class="stage-list">';
+        const stageOrder = ['schema', 'risk', 'policy', 'boundary', 'control', 'hitl'];
+        for (const stageName of stageOrder) {
+          const stage = entry.details[stageName];
+          if (stage) {
+            const passed = stage.passed !== false;
+            html += `<div class="stage-row">
+              <span class="stage-dot ${passed ? 'pass' : 'fail'}"></span>
+              <span class="stage-name">${esc(stageName)}</span>
+              <span class="stage-reason">${passed ? '✓' : '✗'} ${esc(stage.reason || '')}</span>
+            </div>`;
+          }
+        }
+        // Show any remaining stages not in the standard order
+        for (const key of Object.keys(entry.details)) {
+          if (!stageOrder.includes(key)) {
+            const stage = entry.details[key];
+            const passed = stage.passed !== false;
+            html += `<div class="stage-row">
+              <span class="stage-dot ${passed ? 'pass' : 'fail'}"></span>
+              <span class="stage-name">${esc(key)}</span>
+              <span class="stage-reason">${esc(typeof stage === 'string' ? stage : (stage.reason || ''))}</span>
+            </div>`;
+          }
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+  } else {
+    html += '<p style="color:var(--dim)">No audit entries recorded.</p>';
+  }
+  html += '</div></div>';
+
+  html += '</div>'; // end flex-row
+
+  content.innerHTML = html;
 }
 
 async function cancelTask(id) {

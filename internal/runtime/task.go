@@ -59,11 +59,17 @@ type Task struct {
 	Error     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+
+	// Rich observability data (populated when using SubmitWithResult)
+	RunResult *RunResult `json:"run_result,omitempty"`
 }
 
 // TaskFunc is the function signature for task execution.
 // It receives a context that is cancelled when the task is cancelled.
 type TaskFunc func(ctx context.Context) (string, error)
+
+// TaskFuncWithResult is the function signature for task execution with rich result.
+type TaskFuncWithResult func(ctx context.Context) RunResult
 
 // TaskManager manages the lifecycle of async tasks.
 //
@@ -125,6 +131,34 @@ func (tm *TaskManager) Submit(parentCtx context.Context, task string, fn TaskFun
 
 	tm.wg.Add(1)
 	go tm.run(ctx, t, fn)
+
+	return id
+}
+
+// SubmitWithResult creates a new task and starts executing it asynchronously.
+// The task function returns a RunResult containing rich observability data
+// (state transitions, audit log, etc.) that is stored in the Task.
+func (tm *TaskManager) SubmitWithResult(parentCtx context.Context, task string, fn TaskFuncWithResult) string {
+	id := tm.nextID()
+	now := time.Now()
+
+	t := &Task{
+		ID:        id,
+		Task:      task,
+		Status:    TaskStatusPending,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	ctx, cancel := context.WithCancel(parentCtx)
+
+	tm.mu.Lock()
+	tm.tasks[id] = t
+	tm.cancels[id] = cancel
+	tm.mu.Unlock()
+
+	tm.wg.Add(1)
+	go tm.runWithResult(ctx, t, fn)
 
 	return id
 }
@@ -210,6 +244,31 @@ func (tm *TaskManager) run(ctx context.Context, t *Task, fn TaskFunc) {
 	tm.mu.Unlock()
 }
 
+// runWithResult executes the task function and stores the rich RunResult.
+func (tm *TaskManager) runWithResult(ctx context.Context, t *Task, fn TaskFuncWithResult) {
+	defer tm.wg.Done()
+
+	// Transition to Running
+	tm.updateTaskWithResult(t.ID, TaskStatusRunning, "", "", nil)
+
+	result := fn(ctx)
+
+	// Determine final status
+	if ctx.Err() != nil {
+		// Context was cancelled
+		tm.updateTaskWithResult(t.ID, TaskStatusCancelled, "", result.Error, &result)
+	} else if result.Error != "" {
+		tm.updateTaskWithResult(t.ID, TaskStatusFailed, "", result.Error, &result)
+	} else {
+		tm.updateTaskWithResult(t.ID, TaskStatusCompleted, result.Text, "", &result)
+	}
+
+	// Clean up cancel function
+	tm.mu.Lock()
+	delete(tm.cancels, t.ID)
+	tm.mu.Unlock()
+}
+
 // updateTask updates the status, result, and error of a task.
 func (tm *TaskManager) updateTask(id string, status TaskStatus, result, errMsg string) {
 	tm.mu.Lock()
@@ -222,6 +281,22 @@ func (tm *TaskManager) updateTask(id string, status TaskStatus, result, errMsg s
 	t.Status = status
 	t.Result = result
 	t.Error = errMsg
+	t.UpdatedAt = time.Now()
+}
+
+// updateTaskWithResult updates the task including the RunResult.
+func (tm *TaskManager) updateTaskWithResult(id string, status TaskStatus, result, errMsg string, runResult *RunResult) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+
+	t, ok := tm.tasks[id]
+	if !ok {
+		return
+	}
+	t.Status = status
+	t.Result = result
+	t.Error = errMsg
+	t.RunResult = runResult
 	t.UpdatedAt = time.Now()
 }
 

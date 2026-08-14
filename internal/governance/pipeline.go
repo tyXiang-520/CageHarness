@@ -37,6 +37,7 @@ func (p *Pipeline) Evaluate(action protocol.Action) PipelineResult {
 	actionHash := ComputeActionHash(action)
 	result := PipelineResult{
 		ActionID:  action.ID,
+		ToolName:  action.Type,
 		Timestamp: time.Now(),
 	}
 
@@ -142,6 +143,7 @@ func (p *Pipeline) ApproveHITL(action protocol.Action, auth GovernanceAuth) (Pip
 	result := PipelineResult{
 		Decision:  DecisionAllow,
 		ActionID:  action.ID,
+		ToolName:  action.Type,
 		Timestamp: time.Now(),
 		Auth:      &auth,
 		Stages: []StageResult{
@@ -157,6 +159,7 @@ func (p *Pipeline) RejectHITL(action protocol.Action, auth GovernanceAuth, reaso
 	result := PipelineResult{
 		Decision:  DecisionDeny,
 		ActionID:  action.ID,
+		ToolName:  action.Type,
 		Timestamp: time.Now(),
 		Auth:      &auth,
 		Stages: []StageResult{

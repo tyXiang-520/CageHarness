@@ -124,8 +124,8 @@ func (s *Server) submitTask(w http.ResponseWriter, r *http.Request) {
 	// Gate C: Use context.Background() for task lifecycle.
 	// The HTTP request context (r.Context()) is only for reading the request body.
 	// client disconnect → HTTP handler returns → Task continues in background.
-	taskID := s.taskManager.Submit(context.Background(), req.Task, func(ctx context.Context) (string, error) {
-		return s.loop.Run(ctx, req.Task)
+	taskID := s.taskManager.SubmitWithResult(context.Background(), req.Task, func(ctx context.Context) runtime.RunResult {
+		return s.loop.RunWithResult(ctx, req.Task)
 	})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -175,18 +175,45 @@ func (s *Server) cancelTask(w http.ResponseWriter, r *http.Request, id string) {
 // taskResponse is the JSON response shape for a task.
 // Gate D: Status field uses runtime.TaskStatus.String() — no custom enum.
 type taskResponse struct {
-	ID        string `json:"id"`
-	Task      string `json:"task"`
-	Status    string `json:"status"`
-	Result    string `json:"result,omitempty"`
-	Error     string `json:"error,omitempty"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	ID        string         `json:"id"`
+	Task      string         `json:"task"`
+	Status    string         `json:"status"`
+	Result    string         `json:"result,omitempty"`
+	Error     string         `json:"error,omitempty"`
+	CreatedAt string         `json:"created_at"`
+	UpdatedAt string         `json:"updated_at"`
+	RunResult *runResultJSON `json:"run_result,omitempty"`
+}
+
+// runResultJSON exposes governance and observability data to the frontend.
+type runResultJSON struct {
+	Text             string                `json:"text"`
+	Error            string                `json:"error,omitempty"`
+	Iterations       int                   `json:"iterations"`
+	StateTransitions []stateTransitionJSON `json:"state_transitions"`
+	AuditLog         []auditLogEntryJSON   `json:"audit_log"`
+}
+
+type stateTransitionJSON struct {
+	From      string `json:"from"`
+	To        string `json:"to"`
+	Timestamp string `json:"timestamp"`
+}
+
+type auditLogEntryJSON struct {
+	ID        string         `json:"id"`
+	ActionID  string         `json:"action_id"`
+	ToolName  string         `json:"tool_name"`
+	Decision  string         `json:"decision"`
+	RiskLevel string         `json:"risk_level"`
+	Actor     string         `json:"actor"`
+	Timestamp string         `json:"timestamp"`
+	Details   map[string]any `json:"details,omitempty"`
 }
 
 // taskToResponse converts a runtime.Task to a taskResponse.
 func taskToResponse(t *runtime.Task) taskResponse {
-	return taskResponse{
+	resp := taskResponse{
 		ID:        t.ID,
 		Task:      t.Task,
 		Status:    t.Status.String(),
@@ -195,4 +222,48 @@ func taskToResponse(t *runtime.Task) taskResponse {
 		CreatedAt: t.CreatedAt.Format("2006-01-02T15:04:05Z"),
 		UpdatedAt: t.UpdatedAt.Format("2006-01-02T15:04:05Z"),
 	}
+
+	if t.RunResult != nil {
+		resp.RunResult = convertRunResult(t.RunResult)
+	}
+
+	return resp
+}
+
+// convertRunResult converts a runtime.RunResult to its JSON representation.
+func convertRunResult(rr *runtime.RunResult) *runResultJSON {
+	if rr == nil {
+		return nil
+	}
+
+	r := &runResultJSON{
+		Text:       rr.Text,
+		Error:      rr.Error,
+		Iterations: rr.Iterations,
+	}
+
+	// Convert state transitions
+	for _, st := range rr.StateTransitions {
+		r.StateTransitions = append(r.StateTransitions, stateTransitionJSON{
+			From:      st.From.String(),
+			To:        st.To.String(),
+			Timestamp: st.Timestamp.Format("2006-01-02T15:04:05Z"),
+		})
+	}
+
+	// Convert audit log entries
+	for _, entry := range rr.AuditLog {
+		r.AuditLog = append(r.AuditLog, auditLogEntryJSON{
+			ID:        entry.ID,
+			ActionID:  entry.ActionID,
+			ToolName:  entry.ToolName,
+			Decision:  entry.Decision.String(),
+			RiskLevel: entry.RiskLevel.String(),
+			Actor:     entry.Actor,
+			Timestamp: entry.Timestamp.Format("2006-01-02T15:04:05Z"),
+			Details:   entry.Details,
+		})
+	}
+
+	return r
 }

@@ -73,12 +73,15 @@ func TestAuditLogEntry_ZeroValue(t *testing.T) {
 }
 
 func TestAuditLogEntry_NewEntry(t *testing.T) {
-	entry := NewAuditLogEntry("act-1", DecisionAllow, "agent")
+	entry := NewAuditLogEntry("act-1", "shell", DecisionAllow, RiskLevelLow, "agent")
 	if entry.ID == "" {
 		t.Error("NewAuditLogEntry should generate a non-empty ID")
 	}
 	if entry.ActionID != "act-1" {
 		t.Errorf("ActionID = %q, want %q", entry.ActionID, "act-1")
+	}
+	if entry.ToolName != "shell" {
+		t.Errorf("ToolName = %q, want %q", entry.ToolName, "shell")
 	}
 	if entry.Decision != DecisionAllow {
 		t.Errorf("Decision = %v, want %v", entry.Decision, DecisionAllow)
@@ -92,7 +95,7 @@ func TestAuditLogEntry_NewEntry(t *testing.T) {
 }
 
 func TestAuditLogEntry_WithDetails(t *testing.T) {
-	entry := NewAuditLogEntry("act-2", DecisionDeny, "governance")
+	entry := NewAuditLogEntry("act-2", "file_read", DecisionDeny, RiskLevelMedium, "governance")
 	entry.WithDetails(map[string]any{"reason": "risk too high", "risk_level": "critical"})
 	if entry.Details["reason"] != "risk too high" {
 		t.Errorf("Details[reason] = %v, want %v", entry.Details["reason"], "risk too high")
@@ -103,7 +106,7 @@ func TestAuditLogEntry_WithDetails(t *testing.T) {
 }
 
 func TestAuditLogEntry_DenyEntry(t *testing.T) {
-	entry := NewAuditLogEntry("act-3", DecisionDeny, "policy-engine")
+	entry := NewAuditLogEntry("act-3", "file_write", DecisionDeny, RiskLevelHigh, "policy-engine")
 	if entry.Decision != DecisionDeny {
 		t.Errorf("Decision = %v, want %v", entry.Decision, DecisionDeny)
 	}
@@ -113,7 +116,7 @@ func TestAuditLogEntry_DenyEntry(t *testing.T) {
 }
 
 func TestAuditLogEntry_JSONRoundTrip(t *testing.T) {
-	original := NewAuditLogEntry("act-4", DecisionRequireApproval, "human")
+	original := NewAuditLogEntry("act-4", "git", DecisionRequireApproval, RiskLevelHigh, "human")
 	original.WithDetails(map[string]any{"tool": "shell"})
 
 	data, err := json.Marshal(original)
@@ -132,6 +135,9 @@ func TestAuditLogEntry_JSONRoundTrip(t *testing.T) {
 	if decoded.ActionID != original.ActionID {
 		t.Errorf("ActionID = %q, want %q", decoded.ActionID, original.ActionID)
 	}
+	if decoded.ToolName != original.ToolName {
+		t.Errorf("ToolName = %q, want %q", decoded.ToolName, original.ToolName)
+	}
 	if decoded.Decision != original.Decision {
 		t.Errorf("Decision = %v, want %v", decoded.Decision, original.Decision)
 	}
@@ -141,7 +147,7 @@ func TestAuditLogEntry_JSONRoundTrip(t *testing.T) {
 }
 
 func TestAuditLogEntry_RedactSensitive(t *testing.T) {
-	entry := NewAuditLogEntry("act-5", DecisionAllow, "agent")
+	entry := NewAuditLogEntry("act-5", "shell", DecisionAllow, RiskLevelLow, "agent")
 	entry.WithDetails(map[string]any{
 		"api_key": "sk-1234567890abcdef",
 		"command": "echo hello",
@@ -161,7 +167,7 @@ func TestAuditLogEntry_RedactSensitive(t *testing.T) {
 }
 
 func TestAuditLogEntry_AppendRedact(t *testing.T) {
-	entry := NewAuditLogEntry("act-6", DecisionAllow, "agent")
+	entry := NewAuditLogEntry("act-6", "shell", DecisionAllow, RiskLevelLow, "agent")
 	entry.AppendRedact("custom_secret")
 	entry.WithDetails(map[string]any{"custom_secret": "sensitive_value", "safe": "ok"})
 	entry.RedactSensitive()
@@ -176,7 +182,7 @@ func TestAuditLogEntry_AppendRedact(t *testing.T) {
 
 func TestAuditLogEntry_JSONSkipRedact(t *testing.T) {
 	// Verify redacted fields are NOT serialized
-	entry := NewAuditLogEntry("act-7", DecisionAllow, "agent")
+	entry := NewAuditLogEntry("act-7", "shell", DecisionAllow, RiskLevelLow, "agent")
 	entry.WithDetails(map[string]any{"api_key": "secret123"})
 	entry.RedactSensitive()
 
@@ -202,7 +208,7 @@ func TestAuditLogEntry_JSONSkipRedact(t *testing.T) {
 }
 
 func TestAuditLogEntry_RequireApprovalEscalate(t *testing.T) {
-	entry := NewAuditLogEntry("act-8", DecisionEscalate, "policy-engine")
+	entry := NewAuditLogEntry("act-8", "shell", DecisionEscalate, RiskLevelCritical, "policy-engine")
 	if entry.Decision != DecisionEscalate {
 		t.Errorf("Decision = %v, want %v", entry.Decision, DecisionEscalate)
 	}

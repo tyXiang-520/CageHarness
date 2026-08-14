@@ -48,12 +48,14 @@ func (d GovernanceDecision) RequiresApproval() bool {
 
 // AuditLogEntry records a single governance decision for audit trail.
 type AuditLogEntry struct {
-	ID        string            `json:"id"`
-	Timestamp time.Time         `json:"timestamp"`
-	ActionID  string            `json:"action_id"`
+	ID        string             `json:"id"`
+	Timestamp time.Time          `json:"timestamp"`
+	ActionID  string             `json:"action_id"`
+	ToolName  string             `json:"tool_name"`
 	Decision  GovernanceDecision `json:"decision"`
-	Actor     string            `json:"actor"`
-	Details   map[string]any    `json:"details,omitempty"`
+	RiskLevel RiskLevel          `json:"risk_level"`
+	Actor     string             `json:"actor"`
+	Details   map[string]any     `json:"details,omitempty"`
 
 	// sensitiveKeys holds field names to redact on output.
 	// Populated via AppendRedact and consumed by RedactSensitive.
@@ -66,12 +68,14 @@ var auditSensitivePrefixes = []string{
 }
 
 // NewAuditLogEntry creates a new audit log entry with a generated ID.
-func NewAuditLogEntry(actionID string, decision GovernanceDecision, actor string) AuditLogEntry {
+func NewAuditLogEntry(actionID, toolName string, decision GovernanceDecision, riskLevel RiskLevel, actor string) AuditLogEntry {
 	return AuditLogEntry{
 		ID:        generateAuditID(),
 		Timestamp: time.Now(),
 		ActionID:  actionID,
+		ToolName:  toolName,
 		Decision:  decision,
+		RiskLevel: riskLevel,
 		Actor:     actor,
 		Details:   make(map[string]any),
 	}
