@@ -425,7 +425,7 @@ Retriever.Retrieve(task, topK=3)
 
 ### 3.7 CLI 入口（`internal/cli/` + `cmd/harness/`）
 
-CLI 是 runtime 的薄封装——仅导入 `runtime` 包，不导入任何 domain 包。
+CLI 是 runtime 的薄封装——`internal/cli/` 仅导入 `runtime` 包，不导入任何 domain 包。`cmd/harness/` 作为 wiring 层，负责组装所有依赖。
 
 | 命令 | 功能 | 说明 |
 |------|------|------|
@@ -434,8 +434,12 @@ CLI 是 runtime 的薄封装——仅导入 `runtime` 包，不导入任何 doma
 | `harness status <id>` | 查询任务状态 | 通过 TaskManager.Get 查询 |
 | `harness list` | 列出所有任务 | 通过 TaskManager.List 查询 |
 | `harness cancel <id>` | 取消任务 | 通过 TaskManager.Cancel 取消 |
+| `harness serve [port]` | 启动 WebUI | 监听指定端口（默认 :8080） |
+| `harness key setup [name]` | 引导录入 API key | 隐藏输入，存入 OS Keychain |
+| `harness key status [name]` | 查看已配置 key | 显示掩码，不回显明文 |
+| `harness key clear <name>` | 删除存储的 key | 确认后删除 |
 
-**架构约束**：CLI 仅导入 runtime 包，不导入 agent/governance/tools/llm/memory/feedback。这是"CLI 是 runtime client，不是第二套 runtime"的架构约束。
+**架构约束**：`internal/cli/` 仅导入 runtime 包，不导入 agent/governance/tools/llm/memory/feedback。`cmd/harness/` 作为 wiring 层负责组装所有依赖（包括 credential 包）。
 
 ### 3.8 WebUI（`internal/web/`）
 
@@ -488,18 +492,20 @@ Agent 在独立 goroutine 中异步执行，不阻塞 HTTP 请求。HTTP 连接�
 
 | 需求 | 描述 |
 |------|------|
-| 凭据安全 | API key 绝不硬编码、绝不进入 Git、绝不进入日志。使用 OS Keychain 作为安全存储，.env 仅作兼容输入源。详见 §7 |
+| 凭据安全 | API key 绝不硬编码、绝不进入 Git、绝不进入日志。使用 OS Keychain 作为安全存储（Windows: cmdkey, macOS: security, Linux: secret-tool），.env 仅作兼容输入源。详见 §7 |
+| 交互式录入 | 首次运行 `harness key setup` 引导用户安全录入 API key，使用隐藏输入（不回显字符） |
+| 凭据管理 | `harness key status` 显示已配置 key（从不回显明文），`harness key clear` 确认后删除 |
 | 治理拦截 | 所有工具执行必须经过 Governance 授权。架构不变量：Agent NEVER directly invokes Tool.Execute() |
 | 路径边界 | 所有文件操作限制在 `workspace_root` 内，禁止 `../` 和绝对路径逃逸 |
 | 执行超时 | 所有 shell 和测试执行使用 `context.WithTimeout()`，防止无限运行 |
 | 环境隔离 | 演示部署时，Agent 仅操作受限的 demo workspace，不接触宿主 OS |
-| 审计日志脱敏 | 凭据类字段（token、password、api_key 等）写入日志前自动脱敏 |
+| 审计日志脱敏 | 凭据类字段（token、password、api_key 等）写入日志前自动脱敏（RedactSensitiveFields） |
 
 ### 4.3 可用性
 
 | 需求 | 描述 |
 |------|------|
-| 引导式启动 | 首次运行 `harness init` 引导用户录入 API key、创建配置文件 |
+| 引导式启动 | 首次运行 `harness key setup` 引导用户录入 API key，使用隐藏输入 |
 | 清晰的终端输出 | 每次迭代显示关键信息，不产生噪音 |
 | 可观测的 WebUI | 直观展示 Agent 状态、Action Trace、Governance 决策、审计日志 |
 | 错误可理解 | LLM 调用失败、工具执行错误等均输出可读的错误信息，而非堆栈跟踪 |
@@ -964,16 +970,18 @@ type PipelineResult struct {
 
 ```go
 type AuditLogEntry struct {
-    ID        string            `json:"id"`
-    Timestamp time.Time         `json:"timestamp"`
-    ActionID  string            `json:"action_id"`
-    Decision  GovernanceDecision `json:"decision"`
-    Actor     string            `json:"actor"`
-    Details   map[string]any    `json:"details,omitempty"`
+    ID        string             `json:"id"`
+    Timestamp time.Time          `json:"timestamp"`
+    ActionID  string             `json:"action_id"`
+    ToolName  string             `json:"tool_name"`   // v3.1: tool name from action.Type
+    Decision  GovernanceDecision  `json:"decision"`
+    RiskLevel RiskLevel          `json:"risk_level"`  // v3.1: max risk level across stages
+    Actor     string             `json:"actor"`
+    Details   map[string]any     `json:"details,omitempty"`
 }
 ```
 
-敏感信息脱敏：`RedactSensitive()` 方法对 `api_key`、`token`、`secret`、`password`、`credential` 等字段自动替换为 `"[REDACTED]"`。
+敏感信息脱敏：`RedactSensitive()` 方法对 `api_key`、`token`、`secret`、`password`、`credential`、`authorization`、`auth` 等字段自动替换为 `"[REDACTED]"`。匹配大小写不敏感，基于子串包含。
 
 ### 6.10 FeedbackObservation（`internal/feedback/feedback.go`）
 
@@ -1059,42 +1067,51 @@ type LoopConfig struct {
 
 ### 7.1 凭据威胁模型
 
-| 威胁 | 等级 | 缓解措施 |
-|------|:---:|---------|
-| 凭据硬编码在源码中 | 高 | 代码审查 + 架构不变量：所有 API key 通过 CredentialStore 读取 |
-| 凭据被提交到 Git | 高 | .gitignore 包含 `.env`、`config.yaml`（含 key 时）；pre-commit hook 检查 |
-| 凭据出现在终端 history | 中 | 使用隐藏输入读取 key，而非命令行参数 |
-| 凭据出现在日志中 | 中 | 审计日志脱敏；进程环境变量可在日志中出现的风险在文档中说明 |
-| .env 文件明文泄露 | 中 | 文档说明 .env 为明文风险；默认仅作兼容输入源 |
-| 进程环境被其他进程读取 | 低 | 使用 OS Keychain 作为主存储，key 仅运行时加载到进程内存 |
+| 威胁 | 等级 | 缓解措施 | 实现状态 |
+|------|:---:|---------|:-------:|
+| 凭据硬编码在源码中 | 高 | 代码审查 + 架构不变量：所有 API key 通过 `CredentialStore` 接口读取 | ✅ |
+| 凭据被提交到 Git | 高 | `.gitignore` 包含 `.env`、`config.yaml`（含 key 时）；凭据仅通过 OS Keychain 或环境变量注入 | ✅ |
+| 凭据出现在终端 history | 中 | `harness key setup` 使用隐藏输入（Windows: Console API; Unix: stty -echo）；key 不作为命令行参数 | ✅ |
+| 凭据出现在日志中 | 中 | 审计日志脱敏：`RedactSensitiveFields()` 递归替换 `api_key`/`token`/`secret`/`password`/`credential`/`authorization`/`auth` 字段为 `[REDACTED]` | ✅ |
+| .env 文件明文泄露 | 中 | 文档说明 .env 为明文风险；`KeychainStore` 为推荐存储；`.env` 仅作兼容输入源 | ✅ |
+| 进程环境被其他进程读取 | 低 | 使用 OS Keychain 作为主存储，key 仅运行时加载到进程内存；`harness key status` 不回显明文 | ✅ |
+| 凭据在内存中长期驻留 | 低 | 凭据仅在 `OpenAIProvider.Generate()` 调用期间存在于内存中；调用完成后可被 GC 回收 | ⚠️ 有限 |
 
 ### 7.2 凭据存储架构
 
-**分阶段实现**：
+**三种 CredentialStore 实现**：
 
-| 阶段 | 内容 | 说明 |
-|:---:|------|------|
-| Phase 1 (MVP) | `CredentialStore` 接口 + `MockStore`（测试用）+ `EnvStore`（环境变量/.env 兼容）+ `redactSensitiveFields()` | 确保接口完整、测试可 mock、日志脱敏功能就绪 |
-| Phase 2 (延后) | `KeychainStore`（macOS Keychain / Windows Credential Manager / Linux Secret Service） | 平台安全存储，MVP 后实现 |
+| 实现 | 存储位置 | 安全级别 | 用途 |
+|------|---------|:-------:|------|
+| `MockStore` | 内存 | 无 | 单元测试 |
+| `EnvStore` | 环境变量 + .env 文件 | 低（明文） | 兼容输入源、Docker 部署 |
+| `KeychainStore` | OS 原生钥匙串 | 高（加密） | 默认推荐存储 |
 
-**Phase 1 接口定义**：
+**KeychainStore 平台后端**：
 
-```go
-type CredentialStore interface {
-    Set(name, secret string) error
-    Get(name string) (string, error)
-    Delete(name string) error
-    Exists(name string) bool
-}
+| 平台 | 工具 | 存储后端 |
+|------|------|---------|
+| Windows | `cmdkey.exe` | Windows Credential Manager (DPAPI 加密) |
+| macOS | `security` CLI | macOS Keychain |
+| Linux | `secret-tool` | Secret Service (libsecret/gnome-keyring) |
+
+**Windows 特别说明**：Windows Credential Manager 通过 `cmdkey` 为只写存储——密码无法以明文检索（安全设计）。应用程序运行时通过环境变量读取凭据；Keychain 作为安全备份和状态验证层。
+
+**CLI 凭据管理命令**：
+
+```
+harness key setup [name]    — 交互式引导录入 API key（隐藏输入）
+harness key status [name]   — 查看已配置 key（不回显明文，仅显示掩码）
+harness key clear <name>    — 确认后删除存储的 key
 ```
 
 **安全策略**：
 - **存储**：`KeychainStore` 是默认和推荐的存储方案。`EnvStore` 仅作为兼容输入源，不作为安全存储方案
-- **录入**：首次运行 `harness init` 时，通过隐藏输入（不回显字符）引导用户录入 API key，存入 Keychain
-- **查看**：`harness credential status` 仅显示"已配置/未配置"，不回显明文
-- **更新**：`harness credential set` 重新录入，覆盖旧值
-- **清除**：`harness credential delete` 需确认后删除
-- **日志**：凭据绝不进入任何日志文件（含审计日志，通过 `redactSensitiveFields()` 保证）
+- **录入**：首次运行 `harness key setup` 时，通过隐藏输入（不回显字符）引导用户录入 API key，存入 OS Keychain
+- **查看**：`harness key status` 仅显示掩码（如 `sk-1************ghij`），不回显明文
+- **更新**：`harness key setup` 覆盖已有 key（需确认）
+- **清除**：`harness key clear` 需确认后删除
+- **日志**：凭据绝不进入任何日志文件（含审计日志，通过 `RedactSensitiveFields()` 保证，匹配 `api_key`、`token`、`secret`、`password`、`credential`、`authorization`、`auth` 等字段名，大小写不敏感）
 
 ### 7.3 分发形态
 
@@ -1128,7 +1145,7 @@ ENTRYPOINT ["harness"]
 
 #### 7.3.3 分发安全
 
-- 二进制分发时，用户在目标机器上首次运行 `harness init` 引导录入 API key
+- 二进制分发时，用户在目标机器上首次运行 `harness key setup` 引导录入 API key
 - Docker 运行时，通过 `-e OPENAI_API_KEY=...` 或挂载 `.env` 文件传入 key（文档说明风险）
 - 更好的 Docker 方式：使用 Docker secret 或 volume 挂载 keychain 文件
 
@@ -1150,7 +1167,7 @@ docker run \
 分发部分必须在 README 写清：
 1. 获取方式（GitHub 地址、Docker pull 命令、二进制下载链接）
 2. 运行命令（`docker run`、`./harness run`）
-3. Key 在目标机器上的安全配置方式（`harness init` 引导流程）
+3. Key 在目标机器上的安全配置方式（`harness key setup` 引导流程）
 4. 已知限制（平台/架构/依赖前提）
 
 ---
@@ -1248,13 +1265,15 @@ docker run \
 
 ### 9.5 凭据验收
 
-| 标准 | 要求 |
-|------|------|
-| 无硬编码 | 源码中无任何真实 API key |
-| 无 Git 历史泄露 | .gitignore 覆盖 `.env`、`config.yaml`（含 key 的情况） |
-| 安全存储 | OS Keychain 可用 |
-| 引导式录入 | `harness init` 引导用户录入 key |
-| 日志无凭据 | 审计日志执行 `redactSensitiveFields()` |
+| 标准 | 要求 | 状态 |
+|------|------|:---:|
+| 无硬编码 | 源码中无任何真实 API key | ✅ |
+| 无 Git 历史泄露 | `.gitignore` 覆盖 `.env`、`config.yaml`；凭据通过 OS Keychain 管理 | ✅ |
+| 安全存储 | OS Keychain 可用（Windows: cmdkey, macOS: security, Linux: secret-tool） | ✅ |
+| 引导式录入 | `harness key setup` 引导用户录入 key（隐藏输入） | ✅ |
+| 凭据查看 | `harness key status` 显示掩码，不回显明文 | ✅ |
+| 凭据清除 | `harness key clear` 确认后删除 | ✅ |
+| 日志无凭据 | 审计日志执行 `RedactSensitiveFields()`，敏感字段替换为 `[REDACTED]` | ✅ |
 
 ---
 
