@@ -87,6 +87,9 @@ func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 
 	if path == "/index.html" {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		// SCF 网关默认给响应加 Content-Disposition: attachment，
+		// 会导致浏览器下载而不是渲染页面。显式声明 inline 覆盖之。
+		w.Header().Set("Content-Disposition", "inline")
 		w.Header().Set("Content-Length", strconv.Itoa(len(indexHTML)))
 		w.WriteHeader(http.StatusOK)
 		w.Write(indexHTML)

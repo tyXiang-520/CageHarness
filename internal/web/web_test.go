@@ -44,6 +44,56 @@ func setupTestServer(t *testing.T) *Server {
 // the linter/build would catch it. The test file imports them only for test setup,
 // which is the same pattern as CLI tests.
 
+// TestWebUI_IndexServesInlineHTML verifies the WebUI page is served as an
+// inline HTML document, not an attachment. SCF's gateway injects
+// Content-Disposition: attachment by default, which makes browsers download
+// the page instead of rendering it — the handler must declare inline.
+func TestWebUI_IndexServesInlineHTML(t *testing.T) {
+	srv := setupTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	// Bare / redirects to /index.html (client must NOT follow the redirect)
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}}
+	resp, err := client.Get(ts.URL + "/")
+	if err != nil {
+		t.Fatalf("GET / failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("expected 302 redirect from /, got %d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/index.html" {
+		t.Errorf("expected Location /index.html, got %q", loc)
+	}
+
+	// /index.html serves inline HTML
+	resp, err = http.Get(ts.URL + "/index.html")
+	if err != nil {
+		t.Fatalf("GET /index.html failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200, got %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("expected text/html Content-Type, got %q", ct)
+	}
+	if cd := resp.Header.Get("Content-Disposition"); cd != "inline" {
+		t.Errorf("expected Content-Disposition: inline (SCF adds attachment), got %q", cd)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body failed: %v", err)
+	}
+	if !strings.Contains(string(body), "CageHarness") {
+		t.Error("expected WebUI HTML body to contain CageHarness")
+	}
+}
+
 func TestWebUI_SubmitTask(t *testing.T) {
 	// Gate B: POST /tasks returns task_id, does not block waiting for LLM
 	srv := setupTestServer(t)

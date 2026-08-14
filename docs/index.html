@@ -1,377 +1,437 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CageHarness — AI4SE Coding Agent Harness</title>
 <style>
   :root {
-    --bg: #0d1117;
-    --surface: #161b22;
-    --border: #30363d;
+    --bg: #0f1117;
+    --card: #1a1d27;
+    --border: #2a2d3a;
     --text: #c9d1d9;
-    --muted: #8b949e;
+    --dim: #6e7681;
     --accent: #58a6ff;
     --green: #3fb950;
-    --orange: #d2991d;
     --red: #f85149;
+    --yellow: #d2991d;
+    --purple: #a371f7;
+    --orange: #d97706;
   }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
-    background: var(--bg);
-    color: var(--text);
-    line-height: 1.6;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    background: var(--bg); color: var(--text); line-height: 1.5;
     min-height: 100vh;
   }
-  .container { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+  .container { max-width: 1000px; margin: 0 auto; padding: 24px; }
+  header {
+    padding: 24px 0; border-bottom: 1px solid var(--border); margin-bottom: 24px;
+    display: flex; justify-content: space-between; align-items: flex-start;
+  }
+  header h1 { font-size: 1.5rem; color: var(--accent); }
+  header p { color: var(--dim); font-size: 0.9rem; margin-top: 4px; }
 
-  /* Hero */
-  .hero {
-    text-align: center;
-    padding: 80px 0 48px;
+  .card {
+    background: var(--card); border: 1px solid var(--border);
+    border-radius: 8px; padding: 20px; margin-bottom: 16px;
   }
-  .hero .shield { font-size: 64px; margin-bottom: 16px; }
-  .hero h1 {
-    font-size: 48px;
-    font-weight: 800;
-    background: linear-gradient(135deg, var(--accent), var(--green));
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    margin-bottom: 12px;
+  .card h2 { font-size: 1.1rem; margin-bottom: 12px; color: var(--accent); }
+  .card h3 { font-size: 0.95rem; margin-bottom: 8px; color: var(--text); }
+
+  form { display: flex; gap: 8px; }
+  input[type="text"] {
+    flex: 1; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 6px; padding: 10px 12px; color: var(--text);
+    font-size: 0.95rem;
   }
-  .hero .tagline {
-    font-size: 20px;
-    color: var(--muted);
-    margin-bottom: 8px;
+  input[type="text"]:focus { outline: none; border-color: var(--accent); }
+  button {
+    background: var(--accent); color: #fff; border: none;
+    border-radius: 6px; padding: 10px 20px; cursor: pointer;
+    font-size: 0.95rem; font-weight: 500; transition: opacity 0.2s;
   }
-  .hero .badges {
-    display: flex;
-    justify-content: center;
-    gap: 12px;
-    flex-wrap: wrap;
-    margin-top: 20px;
+  button:hover { opacity: 0.85; }
+  button.danger { background: var(--red); }
+  button.small { padding: 4px 12px; font-size: 0.8rem; }
+  button.ghost {
+    background: transparent; border: 1px solid var(--border); color: var(--accent);
+    padding: 4px 12px; font-size: 0.8rem;
   }
+
+  .task-list { list-style: none; }
+  .task-item {
+    display: flex; align-items: center; gap: 12px; padding: 12px;
+    border-bottom: 1px solid var(--border); cursor: pointer;
+    transition: background 0.15s;
+  }
+  .task-item:hover { background: rgba(88,166,255,0.05); }
+  .task-item.active { background: rgba(88,166,255,0.08); }
+  .task-item:last-child { border-bottom: none; }
+  .task-id {
+    font-family: 'SF Mono', 'Cascadia Code', monospace;
+    font-size: 0.85rem; color: var(--dim); min-width: 70px;
+  }
+  .task-cmd { flex: 1; font-size: 0.9rem; }
+  .task-status {
+    font-size: 0.8rem; font-weight: 600; padding: 2px 10px;
+    border-radius: 12px; text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .status-pending { background: rgba(110,118,129,0.2); color: var(--dim); }
+  .status-running { background: rgba(88,166,255,0.15); color: var(--accent); }
+  .status-completed { background: rgba(63,185,80,0.15); color: var(--green); }
+  .status-failed { background: rgba(248,81,73,0.15); color: var(--red); }
+  .status-cancelled { background: rgba(210,153,29,0.15); color: var(--yellow); }
+
+  .task-result {
+    font-size: 0.85rem; color: var(--dim); margin-top: 4px;
+    padding: 8px; background: var(--bg); border-radius: 4px;
+    white-space: pre-wrap; word-break: break-word; max-height: 120px; overflow-y: auto;
+  }
+  .task-error { color: var(--red); }
+
+  .empty { text-align: center; color: var(--dim); padding: 32px 0; }
   .badge {
-    display: inline-block;
-    padding: 4px 12px;
-    border-radius: 20px;
-    font-size: 13px;
-    font-weight: 600;
-    border: 1px solid var(--border);
-    background: var(--surface);
+    display: inline-block; font-size: 0.7rem; font-weight: 600;
+    padding: 2px 8px; border-radius: 10px; margin-left: 8px;
   }
-  .badge.go { color: #00ADD8; border-color: #00ADD8; }
-  .badge.zero { color: var(--green); border-color: var(--green); }
-  .badge.gov { color: var(--orange); border-color: var(--orange); }
+  .badge-governance { background: rgba(163,113,247,0.15); color: var(--purple); }
+  .badge-low { background: rgba(63,185,80,0.15); color: var(--green); }
+  .badge-medium { background: rgba(210,153,29,0.15); color: var(--yellow); }
+  .badge-high { background: rgba(248,81,73,0.15); color: var(--red); }
+  .badge-critical { background: rgba(248,81,73,0.25); color: var(--red); font-weight: 700; }
 
-  /* Feature Grid */
-  .features {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-    gap: 20px;
-    padding: 48px 0;
-  }
-  .feature {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 24px;
-    transition: border-color .2s;
-  }
-  .feature:hover { border-color: var(--accent); }
-  .feature .icon { font-size: 28px; margin-bottom: 12px; }
-  .feature h3 { font-size: 16px; margin-bottom: 8px; }
-  .feature p { font-size: 14px; color: var(--muted); }
+  /* Governance Detail Panel */
+  .detail-panel { display: none; }
+  .detail-panel.visible { display: block; }
 
-  /* Pipeline Diagram */
-  .pipeline {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 32px;
-    margin: 0 0 48px;
-    text-align: center;
+  .timeline { position: relative; padding-left: 20px; margin: 8px 0; }
+  .timeline::before {
+    content: ''; position: absolute; left: 6px; top: 0; bottom: 0;
+    width: 2px; background: var(--border);
   }
-  .pipeline h2 { margin-bottom: 24px; font-size: 22px; }
-  .pipe-stages {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 0;
-    flex-wrap: wrap;
+  .timeline-entry {
+    position: relative; padding: 6px 0 6px 16px; font-size: 0.85rem;
   }
-  .pipe-stage {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 10px 16px;
-    font-size: 13px;
-    font-weight: 600;
-    white-space: nowrap;
+  .timeline-entry::before {
+    content: ''; position: absolute; left: -16px; top: 12px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--accent);
   }
-  .pipe-arrow {
-    color: var(--muted);
-    margin: 0 4px;
-    font-size: 18px;
-  }
+  .timeline-entry.deny::before { background: var(--red); }
+  .timeline-entry.approve::before { background: var(--green); }
+  .timeline-entry.escalate::before { background: var(--orange); }
+  .timeline-meta { color: var(--dim); font-size: 0.8rem; }
 
-  /* Download Section */
-  .downloads {
-    padding: 48px 0;
+  .audit-card {
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px; margin-bottom: 8px; background: var(--bg);
   }
-  .downloads h2 {
-    text-align: center;
-    font-size: 28px;
-    margin-bottom: 32px;
+  .audit-header {
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
   }
-  .dl-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: 16px;
+  .audit-header .tool-name {
+    font-family: 'SF Mono', 'Cascadia Code', monospace;
+    color: var(--accent); font-size: 0.85rem;
   }
-  .dl-card {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 24px;
-    text-align: center;
-    text-decoration: none;
-    color: var(--text);
-    transition: border-color .2s, transform .2s;
+  .stage-list { font-size: 0.8rem; }
+  .stage-row {
+    display: flex; align-items: center; gap: 8px; padding: 3px 0;
   }
-  .dl-card:hover {
-    border-color: var(--accent);
-    transform: translateY(-2px);
+  .stage-dot {
+    width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
   }
-  .dl-card .os-icon { font-size: 32px; margin-bottom: 8px; }
-  .dl-card .os-name { font-weight: 700; margin-bottom: 4px; }
-  .dl-card .os-arch { font-size: 13px; color: var(--muted); }
-  .dl-card .dl-btn {
-    display: inline-block;
-    margin-top: 12px;
-    padding: 6px 20px;
-    background: var(--accent);
-    color: #fff;
-    border-radius: 6px;
-    font-size: 14px;
-    font-weight: 600;
-    text-decoration: none;
-  }
+  .stage-dot.pass { background: var(--green); }
+  .stage-dot.fail { background: var(--red); }
+  .stage-name { color: var(--dim); min-width: 90px; }
+  .stage-reason { color: var(--text); }
 
-  /* Demo Link */
-  .demo {
-    text-align: center;
-    padding: 32px 0 48px;
-  }
-  .demo a {
-    display: inline-block;
-    padding: 14px 40px;
-    background: var(--green);
-    color: #fff;
-    border-radius: 8px;
-    font-size: 18px;
-    font-weight: 700;
-    text-decoration: none;
-    transition: opacity .2s;
-  }
-  .demo a:hover { opacity: 0.9; }
-  .demo .demo-hint {
-    font-size: 13px;
-    color: var(--muted);
-    margin-top: 8px;
-  }
+  .flex-row { display: flex; gap: 16px; flex-wrap: wrap; }
+  .flex-col { flex: 1; min-width: 280px; }
 
-  /* Quick Start */
-  .quickstart {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 32px;
-    margin: 0 0 48px;
-  }
-  .quickstart h2 { margin-bottom: 16px; }
-  .quickstart pre {
-    background: var(--bg);
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    padding: 16px 20px;
-    overflow-x: auto;
-    font-size: 14px;
-    line-height: 1.8;
-  }
-  .quickstart code { color: var(--green); }
-
-  /* Footer */
-  .footer {
-    text-align: center;
-    padding: 48px 0;
-    color: var(--muted);
-    font-size: 14px;
-    border-top: 1px solid var(--border);
-  }
-  .footer a { color: var(--accent); text-decoration: none; }
-  .footer a:hover { text-decoration: underline; }
-
-  @media (max-width: 640px) {
-    .hero h1 { font-size: 32px; }
-    .hero .tagline { font-size: 16px; }
-    .pipe-stages { gap: 4px; }
-    .pipe-stage { font-size: 11px; padding: 6px 10px; }
-  }
+  .footer { text-align: center; color: var(--dim); font-size: 0.8rem; padding: 24px 0; }
+  .highlight { color: var(--purple); font-weight: 600; }
 </style>
 </head>
 <body>
+<div class="container">
+  <header>
+    <div>
+      <h1>🛡️ CageHarness</h1>
+      <p>AI4SE Coding Agent Harness — Governance-driven, zero-dependency, TDD-built</p>
+    </div>
+    <div style="text-align:right;font-size:0.8rem;color:var(--dim)">
+      <span class="badge badge-governance">Governance ★</span>
+      <div style="margin-top:4px">Schema → Risk → Policy → Boundary → Control</div>
+    </div>
+  </header>
 
-<!-- Hero -->
-<section class="hero">
-  <div class="container">
-    <div class="shield">🛡️</div>
-    <h1>CageHarness</h1>
-    <p class="tagline">AI4SE Coding Agent Harness — Governance-Driven, Zero-Dependency</p>
-    <div class="badges">
-      <span class="badge go">Go 1.23</span>
-      <span class="badge zero">零外部依赖</span>
-      <span class="badge gov">5 层治理管道</span>
+  <div class="card">
+    <h2>Submit Task</h2>
+    <form id="task-form">
+      <input type="text" id="task-input" placeholder="e.g., Write a hello world program in Go" autofocus>
+      <button type="submit">Run</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2>Tasks <span class="badge badge-governance">Click for Governance Details</span></h2>
+    <ul class="task-list" id="task-list">
+      <li class="empty">No tasks yet. Submit a task above to get started.</li>
+    </ul>
+  </div>
+
+  <!-- Governance Detail Panel (shown when a task is clicked) -->
+  <div class="detail-panel" id="detail-panel">
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2 id="detail-title">Governance Details</h2>
+        <button class="ghost" onclick="closeDetail()">✕ Close</button>
+      </div>
+      <div id="detail-content"></div>
     </div>
   </div>
-</section>
 
-<!-- Features -->
-<section class="container">
-  <div class="features">
-    <div class="feature">
-      <div class="icon">🔒</div>
-      <h3>Governance Pipeline</h3>
-      <p>Schema → Risk → Policy → Boundary → Control 五层治理管道，每一步操作都经过审计</p>
-    </div>
-    <div class="feature">
-      <div class="icon">🖥️</div>
-      <h3>WebUI</h3>
-      <p>内置深色主题 Web 界面，可视化治理管道、审计日志和风险等级</p>
-    </div>
-    <div class="feature">
-      <div class="icon">💻</div>
-      <h3>CLI</h3>
-      <p>命令行接口，支持 run / submit / status / list / cancel / serve / key</p>
-    </div>
-    <div class="feature">
-      <div class="icon">🔑</div>
-      <h3>凭据安全</h3>
-      <p>交互式引导录入 API Key，OS 原生密钥链存储，绝不明文显示</p>
-    </div>
-    <div class="feature">
-      <div class="icon">🐳</div>
-      <h3>Docker</h3>
-      <p>多阶段构建，Alpine 镜像，开箱即用</p>
-    </div>
-    <div class="feature">
-      <div class="icon">📦</div>
-      <h3>零依赖</h3>
-      <p>纯 Go 标准库实现，无任何第三方依赖，编译快、镜像小</p>
-    </div>
+  <div class="footer">
+    CageHarness · Agent = LLM + Harness · Governance Pipeline: Schema → Risk → Policy → Boundary → Control
   </div>
-</section>
+</div>
 
-<!-- Governance Pipeline -->
-<section class="container">
-  <div class="pipeline">
-    <h2>🛡️ 5-Layer Governance Pipeline</h2>
-    <div class="pipe-stages">
-      <div class="pipe-stage">Schema</div>
-      <span class="pipe-arrow">→</span>
-      <div class="pipe-stage">Risk</div>
-      <span class="pipe-arrow">→</span>
-      <div class="pipe-stage">Policy</div>
-      <span class="pipe-arrow">→</span>
-      <div class="pipe-stage">Boundary</div>
-      <span class="pipe-arrow">→</span>
-      <div class="pipe-stage">Control</div>
-      <span class="pipe-arrow">→</span>
-      <div class="pipe-stage" style="border-color:var(--green);color:var(--green)">Decision</div>
-    </div>
-  </div>
-</section>
+<script>
+const SCF_URL = 'https://1468764621-7o4wyjg0oj.ap-hongkong.tencentscf.com';
+	const API = SCF_URL + '/tasks';
+let refreshTimer = null;
+let selectedTaskId = null;
 
-<!-- Downloads -->
-<section class="container downloads">
-  <h2>📥 下载</h2>
-  <div class="dl-grid">
-    <a class="dl-card" href="https://github.com/tyXiang-520/CageHarness/releases/latest/download/harness-windows-amd64.exe">
-      <div class="os-icon">🪟</div>
-      <div class="os-name">Windows</div>
-      <div class="os-arch">amd64</div>
-      <span class="dl-btn">下载 .exe</span>
-    </a>
-    <a class="dl-card" href="https://github.com/tyXiang-520/CageHarness/releases/latest/download/harness-darwin-amd64">
-      <div class="os-icon">🍎</div>
-      <div class="os-name">macOS Intel</div>
-      <div class="os-arch">amd64</div>
-      <span class="dl-btn">下载</span>
-    </a>
-    <a class="dl-card" href="https://github.com/tyXiang-520/CageHarness/releases/latest/download/harness-darwin-arm64">
-      <div class="os-icon">🍎</div>
-      <div class="os-name">macOS Apple Silicon</div>
-      <div class="os-arch">arm64</div>
-      <span class="dl-btn">下载</span>
-    </a>
-    <a class="dl-card" href="https://github.com/tyXiang-520/CageHarness/releases/latest/download/harness-linux-amd64">
-      <div class="os-icon">🐧</div>
-      <div class="os-name">Linux</div>
-      <div class="os-arch">amd64</div>
-      <span class="dl-btn">下载</span>
-    </a>
-    <a class="dl-card" href="https://github.com/tyXiang-520/CageHarness/releases/latest/download/harness-linux-arm64">
-      <div class="os-icon">🐧</div>
-      <div class="os-name">Linux</div>
-      <div class="os-arch">arm64</div>
-      <span class="dl-btn">下载</span>
-    </a>
-    <a class="dl-card" href="https://github.com/tyXiang-520/CageHarness/releases/latest">
-      <div class="os-icon">🐳</div>
-      <div class="os-name">Docker</div>
-      <div class="os-arch">ghcr.io</div>
-      <span class="dl-btn">查看镜像</span>
-    </a>
-  </div>
-</section>
+document.getElementById('task-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('task-input');
+  const task = input.value.trim();
+  if (!task) return;
 
-<!-- Live Demo -->
-<section class="container demo">
-  <a href="https://1468764621-lg1ve1o8np.ap-hongkong.tencentscf.com" target="_blank" rel="noopener">
-    🌐 在线体验 Demo
-  </a>
-  <p class="demo-hint">部署在腾讯云 SCF 香港节点，无需备案</p>
-</section>
+  try {
+    const resp = await fetch(API, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task })
+    });
+    if (!resp.ok) {
+      const err = await resp.json();
+      alert('Error: ' + (err.error || resp.statusText));
+      return;
+    }
+    const data = await resp.json();
+    input.value = '';
+    fetchTasks();
+    console.log('Task submitted:', data.task_id);
+  } catch (err) {
+    alert('Network error: ' + err.message);
+  }
+});
 
-<!-- Quick Start -->
-<section class="container">
-  <div class="quickstart">
-    <h2>🚀 快速开始</h2>
-    <pre><code># 1. 配置 API Key（交互式引导，隐藏输入）
-./harness key setup
+async function fetchTasks() {
+  try {
+    const resp = await fetch(API);
+    if (!resp.ok) return;
+    const tasks = await resp.json();
+    renderTasks(tasks);
+  } catch (err) {
+    console.error('fetchTasks:', err);
+  }
+}
 
-# 2. 运行任务
-./harness run "write a hello world program in Go"
+function statusClass(status) {
+  return 'status-' + (status || 'pending');
+}
 
-# 3. 启动 WebUI
-./harness serve
-# 访问 http://localhost:8080</code></pre>
-  </div>
-</section>
+function riskBadge(level) {
+  if (!level) return '';
+  const cls = 'badge badge-' + level;
+  return `<span class="${cls}">${level.toUpperCase()}</span>`;
+}
 
-<!-- Footer -->
-<footer class="footer">
-  <div class="container">
-    <p>
-      <a href="https://github.com/tyXiang-520/CageHarness">GitHub</a> ·
-      <a href="https://github.com/tyXiang-520/CageHarness/blob/main/SPEC.md">SPEC</a> ·
-      <a href="https://github.com/tyXiang-520/CageHarness/releases">Releases</a>
-    </p>
-    <p style="margin-top:8px">Built with Go · Zero Dependencies · AI4SE Final Project</p>
-  </div>
-</footer>
+function decisionBadge(decision) {
+  const map = {
+    allow: 'badge-low', deny: 'badge-critical', require_approval: 'badge-high', escalate: 'badge-medium'
+  };
+  return `<span class="badge ${map[decision] || ''}">${decision.replace(/_/g,' ').toUpperCase()}</span>`;
+}
 
+function renderTasks(tasks) {
+  const list = document.getElementById('task-list');
+  if (!tasks || tasks.length === 0) {
+    list.innerHTML = '<li class="empty">No tasks yet. Submit a task above to get started.</li>';
+    return;
+  }
+
+  list.innerHTML = tasks.map(t => `
+    <li>
+      <div class="task-item ${t.id === selectedTaskId ? 'active' : ''}" onclick="selectTask('${esc(t.id)}')">
+        <span class="task-id">${esc(t.id)}</span>
+        <span class="task-cmd">${esc(t.task)}</span>
+        <span class="task-status ${statusClass(t.status)}">${esc(t.status)}</span>
+        ${t.status === 'completed' || t.status === 'failed' || t.status === 'cancelled' ? '' :
+          `<button class="small danger" onclick="event.stopPropagation();cancelTask('${esc(t.id)}')">Cancel</button>`}
+      </div>
+      ${t.result ? `<div class="task-result">${esc(t.result)}</div>` : ''}
+      ${t.error ? `<div class="task-result task-error">${esc(t.error)}</div>` : ''}
+    </li>
+  `).join('');
+
+  // Auto-refresh if any task is still running
+  const hasRunning = tasks.some(t => t.status === 'pending' || t.status === 'running');
+  if (hasRunning && !refreshTimer) {
+    refreshTimer = setInterval(fetchTasks, 2000);
+  } else if (!hasRunning && refreshTimer) {
+    clearInterval(refreshTimer);
+    refreshTimer = null;
+  }
+
+  // Refresh detail panel if selected task is still visible
+  if (selectedTaskId) {
+    const sel = tasks.find(t => t.id === selectedTaskId);
+    if (sel) renderDetail(sel);
+  }
+}
+
+function selectTask(id) {
+  selectedTaskId = id;
+  fetchTasks(); // re-render to highlight
+
+  // Fetch single task to get run_result details
+  fetch(API + '/' + id)
+    .then(r => r.json())
+    .then(t => renderDetail(t))
+    .catch(err => console.error('selectTask:', err));
+}
+
+function closeDetail() {
+  selectedTaskId = null;
+  document.getElementById('detail-panel').classList.remove('visible');
+  fetchTasks();
+}
+
+function renderDetail(task) {
+  const panel = document.getElementById('detail-panel');
+  const content = document.getElementById('detail-content');
+  const title = document.getElementById('detail-title');
+
+  panel.classList.add('visible');
+  title.textContent = 'Governance Details — ' + task.id;
+
+  if (!task.run_result) {
+    content.innerHTML = '<p style="color:var(--dim)">Task is still running. Governance data will appear here when the task completes.</p>';
+    return;
+  }
+
+  const rr = task.run_result;
+  let html = '';
+
+  // Summary stats
+  html += `<div class="flex-row" style="margin-bottom:16px">
+    <div style="flex:1"><span style="color:var(--dim)">Iterations:</span> <strong>${rr.iterations}</strong></div>
+    <div style="flex:1"><span style="color:var(--dim)">State Transitions:</span> <strong>${rr.state_transitions ? rr.state_transitions.length : 0}</strong></div>
+    <div style="flex:1"><span style="color:var(--dim)">Audit Entries:</span> <strong>${rr.audit_log ? rr.audit_log.length : 0}</strong></div>
+  </div>`;
+
+  if (rr.error) {
+    html += `<div class="task-error" style="padding:8px;margin-bottom:12px;background:var(--bg);border-radius:4px">Error: ${esc(rr.error)}</div>`;
+  }
+
+  // Layout: two columns
+  html += '<div class="flex-row">';
+
+  // Left: State Transitions (Action Trace)
+  html += '<div class="flex-col"><div class="card"><h3>🔍 Action Trace</h3>';
+  if (rr.state_transitions && rr.state_transitions.length > 0) {
+    html += '<div class="timeline">';
+    for (const st of rr.state_transitions) {
+      html += `<div class="timeline-entry">
+        <span style="color:var(--accent)">${esc(st.to)}</span>
+        <span style="color:var(--dim);margin-left:10px">← ${esc(st.from)}</span>
+        <div class="timeline-meta">${esc(st.timestamp)}</div>
+      </div>`;
+    }
+    html += '</div>';
+  } else {
+    html += '<p style="color:var(--dim)">No state transitions recorded.</p>';
+  }
+  html += '</div></div>';
+
+  // Right: Governance Audit Log
+  html += '<div class="flex-col"><div class="card"><h3>📋 Governance Audit Trail</h3>';
+  if (rr.audit_log && rr.audit_log.length > 0) {
+    for (const entry of rr.audit_log) {
+      html += `<div class="audit-card">
+        <div class="audit-header">
+          <span class="tool-name">${esc(entry.tool_name || 'unknown')}</span>
+          ${decisionBadge(entry.decision)}
+          ${riskBadge(entry.risk_level)}
+          <span style="color:var(--dim);font-size:0.75rem;margin-left:auto">${esc(entry.timestamp)}</span>
+        </div>`;
+
+      // Show pipeline stages from details
+      if (entry.details && Object.keys(entry.details).length > 0) {
+        html += '<div class="stage-list">';
+        const stageOrder = ['schema', 'risk', 'policy', 'boundary', 'control', 'hitl'];
+        for (const stageName of stageOrder) {
+          const stage = entry.details[stageName];
+          if (stage) {
+            const passed = stage.passed !== false;
+            html += `<div class="stage-row">
+              <span class="stage-dot ${passed ? 'pass' : 'fail'}"></span>
+              <span class="stage-name">${esc(stageName)}</span>
+              <span class="stage-reason">${passed ? '✓' : '✗'} ${esc(stage.reason || '')}</span>
+            </div>`;
+          }
+        }
+        // Show any remaining stages not in the standard order
+        for (const key of Object.keys(entry.details)) {
+          if (!stageOrder.includes(key)) {
+            const stage = entry.details[key];
+            const passed = stage.passed !== false;
+            html += `<div class="stage-row">
+              <span class="stage-dot ${passed ? 'pass' : 'fail'}"></span>
+              <span class="stage-name">${esc(key)}</span>
+              <span class="stage-reason">${esc(typeof stage === 'string' ? stage : (stage.reason || ''))}</span>
+            </div>`;
+          }
+        }
+        html += '</div>';
+      }
+      html += '</div>';
+    }
+  } else {
+    html += '<p style="color:var(--dim)">No audit entries recorded.</p>';
+  }
+  html += '</div></div>';
+
+  html += '</div>'; // end flex-row
+
+  content.innerHTML = html;
+}
+
+async function cancelTask(id) {
+  try {
+    const resp = await fetch(API + '/' + id, { method: 'DELETE' });
+    if (!resp.ok) {
+      const err = await resp.json();
+      alert('Error: ' + (err.error || resp.statusText));
+      return;
+    }
+    fetchTasks();
+  } catch (err) {
+    alert('Network error: ' + err.message);
+  }
+}
+
+function esc(s) {
+  if (!s) return '';
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Initial fetch + periodic refresh
+fetchTasks();
+refreshTimer = setInterval(fetchTasks, 5000);
+</script>
 </body>
 </html>
