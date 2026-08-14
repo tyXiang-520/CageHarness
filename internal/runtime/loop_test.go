@@ -2,12 +2,15 @@ package runtime
 
 import (
 	"context"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/tyXiang-520/CageHarness/internal/agent"
 	"github.com/tyXiang-520/CageHarness/internal/governance"
 	"github.com/tyXiang-520/CageHarness/internal/llm"
+	"github.com/tyXiang-520/CageHarness/internal/memory"
 	"github.com/tyXiang-520/CageHarness/internal/protocol"
 	"github.com/tyXiang-520/CageHarness/internal/tools"
 )
@@ -558,5 +561,156 @@ func TestAgentLoop_RecordedMessages(t *testing.T) {
 	_, err := loop.Run(context.Background(), "test")
 	if err != nil {
 		t.Fatalf("Run failed: %v", err)
+	}
+}
+
+func TestAgentLoop_MemoryInjection(t *testing.T) {
+	// Verifies that relevant memories are injected into the system prompt.
+	// The memory store is configured with a matching entry,
+	// and the MockProvider handler verifies the system prompt contains the memory.
+
+	// Create a temp file store with a memory entry
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "memory.json")
+	store, err := memory.NewFileStore(storePath)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+
+	entry := memory.NewMemoryEntry(memory.MemoryTypeLongTerm, "Use camelCase for JS variables", map[string]any{
+		"tags": "js,naming,convention",
+	})
+	if err := store.Save(entry); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	var firstCallSystemPrompt string
+	mock := llm.NewMockProvider(nil)
+	mock.SetHandler(func(messages []llm.Message) (llm.Response, error) {
+		// Capture the system prompt from the first call
+		if firstCallSystemPrompt == "" && len(messages) > 0 {
+			firstCallSystemPrompt = messages[0].Content
+		}
+		return llm.NewResponse(
+			llm.NewMessage(llm.RoleAssistant, "done"),
+			llm.FinishReasonStop,
+		), nil
+	})
+
+	govCtx := governance.DefaultGovernanceContext()
+	toolReg := tools.NewRegistry()
+
+	loop := NewAgentLoop(mock, governance.NewPipeline(govCtx), toolReg, LoopConfig{
+		MaxIterations: 5,
+		SystemPrompt:  "You are a helpful assistant.",
+	})
+
+	// Configure memory
+	loop.SetMemory(store)
+
+	ctx := context.Background()
+	_, err = loop.Run(ctx, "js naming convention")
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// Verify the system prompt contains the injected memory
+	if !strings.Contains(firstCallSystemPrompt, "Use camelCase for JS variables") {
+		t.Errorf("system prompt should contain injected memory, got: %s", firstCallSystemPrompt)
+	}
+
+	// Verify the original system prompt is preserved
+	if !strings.Contains(firstCallSystemPrompt, "You are a helpful assistant.") {
+		t.Errorf("system prompt should contain original prompt, got: %s", firstCallSystemPrompt)
+	}
+
+	// Verify the memory injection section header is present
+	if !strings.Contains(firstCallSystemPrompt, "Relevant context from memory") {
+		t.Errorf("system prompt should contain memory section header, got: %s", firstCallSystemPrompt)
+	}
+}
+
+func TestAgentLoop_MemoryInjection_NoMemory(t *testing.T) {
+	// Verifies that when memory is not configured, the system prompt is unchanged.
+	mock := llm.NewMockProvider(nil)
+	var firstCallSystemPrompt string
+	mock.SetHandler(func(messages []llm.Message) (llm.Response, error) {
+		if firstCallSystemPrompt == "" && len(messages) > 0 {
+			firstCallSystemPrompt = messages[0].Content
+		}
+		return llm.NewResponse(
+			llm.NewMessage(llm.RoleAssistant, "done"),
+			llm.FinishReasonStop,
+		), nil
+	})
+
+	govCtx := governance.DefaultGovernanceContext()
+	toolReg := tools.NewRegistry()
+
+	loop := NewAgentLoop(mock, governance.NewPipeline(govCtx), toolReg, LoopConfig{
+		MaxIterations: 5,
+		SystemPrompt:  "You are a helpful assistant.",
+	})
+
+	// No SetMemory call — memory is not configured
+
+	ctx := context.Background()
+	_, err := loop.Run(ctx, "some task")
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// System prompt should be exactly the original, no memory injection
+	if firstCallSystemPrompt != "You are a helpful assistant." {
+		t.Errorf("system prompt should be unchanged without memory, got: %s", firstCallSystemPrompt)
+	}
+}
+
+func TestAgentLoop_MemoryInjection_NoMatch(t *testing.T) {
+	// Verifies that when no memories match, the system prompt is unchanged.
+	dir := t.TempDir()
+	storePath := filepath.Join(dir, "memory.json")
+	store, err := memory.NewFileStore(storePath)
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+
+	entry := memory.NewMemoryEntry(memory.MemoryTypeLongTerm, "Go uses gofmt for formatting", map[string]any{
+		"tags": "go,formatting",
+	})
+	if err := store.Save(entry); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	var firstCallSystemPrompt string
+	mock := llm.NewMockProvider(nil)
+	mock.SetHandler(func(messages []llm.Message) (llm.Response, error) {
+		if firstCallSystemPrompt == "" && len(messages) > 0 {
+			firstCallSystemPrompt = messages[0].Content
+		}
+		return llm.NewResponse(
+			llm.NewMessage(llm.RoleAssistant, "done"),
+			llm.FinishReasonStop,
+		), nil
+	})
+
+	govCtx := governance.DefaultGovernanceContext()
+	toolReg := tools.NewRegistry()
+
+	loop := NewAgentLoop(mock, governance.NewPipeline(govCtx), toolReg, LoopConfig{
+		MaxIterations: 5,
+		SystemPrompt:  "You are a helpful assistant.",
+	})
+	loop.SetMemory(store)
+
+	ctx := context.Background()
+	_, err = loop.Run(ctx, "python decorators")
+	if err != nil {
+		t.Fatalf("Run failed: %v", err)
+	}
+
+	// System prompt should still be the original — no matching memories
+	if firstCallSystemPrompt != "You are a helpful assistant." {
+		t.Errorf("system prompt should be unchanged without matching memories, got: %s", firstCallSystemPrompt)
 	}
 }

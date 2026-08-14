@@ -33,22 +33,25 @@ func (mt MemoryType) String() string {
 
 // MemoryEntry represents a single unit of memory stored by the Agent.
 type MemoryEntry struct {
-	ID        string         `json:"id"`
-	Type      MemoryType     `json:"type"`
-	Content   string         `json:"content"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
-	Timestamp time.Time      `json:"timestamp"`
-	TTL       time.Duration  `json:"ttl_ns,omitempty"`
+	ID         string         `json:"id"`
+	Type       MemoryType     `json:"type"`
+	Content    string         `json:"content"`
+	Metadata   map[string]any `json:"metadata,omitempty"`
+	Timestamp  time.Time      `json:"timestamp"`
+	AccessedAt time.Time      `json:"accessed_at"`
+	TTL        time.Duration  `json:"ttl_ns,omitempty"`
 }
 
 // NewMemoryEntry creates a new MemoryEntry with a generated ID.
 func NewMemoryEntry(mt MemoryType, content string, metadata map[string]any) MemoryEntry {
+	now := time.Now()
 	return MemoryEntry{
-		ID:        generateMemoryID(),
-		Type:      mt,
-		Content:   content,
-		Metadata:  metadata,
-		Timestamp: time.Now(),
+		ID:         generateMemoryID(),
+		Type:       mt,
+		Content:    content,
+		Metadata:   metadata,
+		Timestamp:  now,
+		AccessedAt: now,
 	}
 }
 

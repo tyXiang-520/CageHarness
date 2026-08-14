@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/tyXiang-520/CageHarness/internal/agent"
 	"github.com/tyXiang-520/CageHarness/internal/feedback"
 	"github.com/tyXiang-520/CageHarness/internal/governance"
 	"github.com/tyXiang-520/CageHarness/internal/llm"
+	"github.com/tyXiang-520/CageHarness/internal/memory"
 	"github.com/tyXiang-520/CageHarness/internal/protocol"
 	"github.com/tyXiang-520/CageHarness/internal/tools"
 )
@@ -69,6 +71,8 @@ type AgentLoop struct {
 	stateTransitions []StateTransition
 	hitlHandler      HITLHandler
 	feedback         *feedback.FeedbackProcessor
+	memoryStore      *memory.FileStore
+	memoryRetriever  *memory.Retriever
 }
 
 // NewAgentLoop creates a new AgentLoop.
@@ -83,12 +87,22 @@ func NewAgentLoop(llmProvider llm.Provider, gov *governance.Pipeline, toolReg *t
 	}
 }
 
+// SetMemory configures the memory store and retriever for the Agent Loop.
+// When set, relevant memories are injected into the system prompt on each Run() invocation.
+func (a *AgentLoop) SetMemory(store *memory.FileStore) {
+	a.memoryStore = store
+	a.memoryRetriever = memory.NewRetriever(store)
+}
+
 // Run executes the main agent loop for a given task.
 // Returns the final text response or an error.
 func (a *AgentLoop) Run(ctx context.Context, task string) (string, error) {
+	// Build the system prompt, injecting relevant memories if available
+	systemPrompt := a.buildSystemPrompt(task)
+
 	// Initialize the conversation
 	a.messages = []llm.Message{
-		llm.NewSystemMessage(a.config.SystemPrompt),
+		llm.NewSystemMessage(systemPrompt),
 		llm.NewMessage(llm.RoleUser, task),
 	}
 
@@ -147,6 +161,29 @@ func (a *AgentLoop) Run(ctx context.Context, task string) (string, error) {
 
 	a.transition(agent.AgentStateError)
 	return "", fmt.Errorf("max iterations (%d) exceeded", a.config.MaxIterations)
+}
+
+// buildSystemPrompt constructs the system prompt, injecting relevant memories if available.
+func (a *AgentLoop) buildSystemPrompt(task string) string {
+	prompt := a.config.SystemPrompt
+
+	// Inject relevant memories if memory is configured
+	if a.memoryRetriever != nil {
+		memories := a.memoryRetriever.Retrieve(task, 3)
+		if len(memories) > 0 {
+			var sb strings.Builder
+			sb.WriteString(prompt)
+			sb.WriteString("\n\nRelevant context from memory:\n")
+			for _, mem := range memories {
+				sb.WriteString("- ")
+				sb.WriteString(mem.Content)
+				sb.WriteString("\n")
+			}
+			prompt = sb.String()
+		}
+	}
+
+	return prompt
 }
 
 // executeToolCall processes a single tool call through the governance pipeline.
