@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/tyXiang-520/CageHarness/internal/cli"
 	"github.com/tyXiang-520/CageHarness/internal/credential"
@@ -21,22 +22,14 @@ var defaultCredentialNames = []string{
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		printUsage()
-		os.Exit(1)
-	}
-
-	// Wire up dependencies
-	// TODO: Phase 11 — replace with real LLM provider and tools
-	llmProvider := llm.NewMockProvider(nil)
-	llmProvider.SetHandler(func(messages []llm.Message) (llm.Response, error) {
-		return llm.NewResponse(
-			llm.NewMessage(llm.RoleAssistant, "Task completed."),
-			llm.FinishReasonStop,
-		), nil
-	})
-	govCtx := governance.DefaultGovernanceContext()
+	// Create tool registry and register tools
 	toolReg := tools.NewRegistry()
+	registerTools(toolReg)
+
+	// Resolve LLM provider: try real OpenAI API first, fall back to mock
+	llmProvider := resolveLLMProvider(toolReg)
+
+	govCtx := governance.DefaultGovernanceContext()
 	tm := runtime.NewTaskManager()
 
 	loop := runtime.NewAgentLoop(llmProvider, governance.NewPipeline(govCtx), toolReg, runtime.DefaultLoopConfig())
@@ -44,7 +37,37 @@ func main() {
 
 	ctx := context.Background()
 
-	switch os.Args[1] {
+	// SCF / cloud hosting: default to serve mode when no arguments provided
+	cmd := ""
+	if len(os.Args) >= 2 {
+		cmd = os.Args[1]
+	}
+
+	switch cmd {
+	case "", "serve":
+		port := "8080"
+		// SCF / cloud hosting: respect PORT environment variable
+		if envPort := os.Getenv("PORT"); envPort != "" {
+			port = envPort
+		}
+		// Alibaba Cloud FC: respect FC_SERVER_PORT
+		if envPort := os.Getenv("FC_SERVER_PORT"); envPort != "" {
+			port = envPort
+		}
+		// CLI argument overrides both default and env
+		if len(os.Args) >= 3 {
+			port = os.Args[2]
+		}
+		addr := ":" + port
+		srv := web.NewServer(tm, loop)
+		fmt.Printf("\n  CageHarness WebUI starting at http://0.0.0.0%s\n\n", addr)
+		fmt.Println("  Governance Pipeline: Schema → Risk → Policy → Boundary → Control")
+		fmt.Println("  Press Ctrl+C to stop")
+		if err := srv.Start(addr); err != nil {
+			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+			os.Exit(1)
+		}
+
 	case "run":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: harness run <task>")
@@ -107,26 +130,6 @@ func main() {
 		}
 		fmt.Printf("Task %s cancelled.\n", os.Args[2])
 
-	case "serve":
-		port := "8080"
-		// SCF / cloud hosting: respect PORT environment variable
-		if envPort := os.Getenv("PORT"); envPort != "" {
-			port = envPort
-		}
-		// CLI argument overrides both default and env
-		if len(os.Args) >= 3 {
-			port = os.Args[2]
-		}
-		addr := ":" + port
-		srv := web.NewServer(tm, loop)
-		fmt.Printf("\n  CageHarness WebUI starting at http://0.0.0.0%s\n\n", addr)
-		fmt.Println("  Governance Pipeline: Schema → Risk → Policy → Boundary → Control")
-		fmt.Println("  Press Ctrl+C to stop")
-		if err := srv.Start(addr); err != nil {
-			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-			os.Exit(1)
-		}
-
 	case "key":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: harness key <setup|status|clear> [name]")
@@ -142,6 +145,70 @@ func main() {
 		printUsage()
 		os.Exit(1)
 	}
+}
+
+// registerTools registers all available tools in the registry.
+func registerTools(reg *tools.Registry) {
+	// Shell tool — executes shell commands
+	shellTool := tools.NewShellTool(tools.ShellConfig{Timeout: 30 * time.Second})
+	reg.Register(shellTool)
+
+	// File tool — registered as two separate tools: file_read and file_write
+	fileTool := tools.NewFileTool(tools.FileConfig{WorkspaceRoot: "."})
+	reg.Register(&tools.NamedTool{Tool: fileTool, NameOverride: "file_read"})
+	reg.Register(&tools.NamedTool{Tool: fileTool, NameOverride: "file_write"})
+}
+
+// buildToolDefinitions converts registered tools to LLM tool definitions
+// with proper JSON Schema parameters for the OpenAI function-calling API.
+func buildToolDefinitions(reg *tools.Registry) []llm.ToolDefinition {
+	defs := make([]llm.ToolDefinition, 0)
+
+	for _, t := range reg.List() {
+		var params map[string]any
+		switch t.Name() {
+		case "shell":
+			params = map[string]any{
+				"command": map[string]any{
+					"type":        "string",
+					"description": "The shell command to execute (e.g., 'go build ./...', 'ls -la')",
+					"required":    true,
+				},
+			}
+		case "file_read":
+			params = map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Path to the file to read, relative to workspace root",
+					"required":    true,
+				},
+			}
+		case "file_write":
+			params = map[string]any{
+				"path": map[string]any{
+					"type":        "string",
+					"description": "Path to the file to write, relative to workspace root",
+					"required":    true,
+				},
+				"content": map[string]any{
+					"type":        "string",
+					"description": "The content to write to the file",
+					"required":    true,
+				},
+			}
+		default:
+			// Generic fallback — empty parameters
+			params = map[string]any{}
+		}
+
+		defs = append(defs, llm.ToolDefinition{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Parameters:  params,
+		})
+	}
+
+	return defs
 }
 
 // handleKeyCommand processes the 'harness key' subcommands.
@@ -306,6 +373,67 @@ func handleKeyClear(store credential.CredentialStore, storeLabel string, args []
 	}
 
 	fmt.Printf("  ✅ %s removed from %s.\n", credName, storeLabel)
+}
+
+// resolveLLMProvider tries to create a real OpenAI provider using the stored API key.
+// Falls back to MockProvider if no API key is configured.
+func resolveLLMProvider(toolReg *tools.Registry) llm.Provider {
+	// Try to get API key from credential stores
+	keychain := credential.NewKeychainStore()
+	envStore := credential.NewEnvStore()
+
+	// Load .env if present
+	if _, err := os.Stat(".env"); err == nil {
+		envStore.LoadDotEnv(".env")
+	}
+
+	apiKey := ""
+	switch {
+	case keychain.IsAvailable() && keychain.Exists("OPENAI_API_KEY"):
+		if v, err := keychain.Get("OPENAI_API_KEY"); err == nil {
+			apiKey = v
+		}
+	case envStore.Exists("OPENAI_API_KEY"):
+		if v, err := envStore.Get("OPENAI_API_KEY"); err == nil {
+			apiKey = v
+		}
+	}
+
+	if apiKey != "" {
+		endpoint := os.Getenv("OPENAI_ENDPOINT")
+		if endpoint == "" {
+			endpoint = "https://api.openai.com/v1"
+		}
+		model := os.Getenv("OPENAI_MODEL")
+		if model == "" {
+			model = "gpt-3.5-turbo"
+		}
+
+		fmt.Fprintf(os.Stderr, "  Using OpenAI provider: model=%s endpoint=%s\n", model, endpoint)
+		provider := llm.NewOpenAIProvider(llm.OpenAIConfig{
+			Endpoint:  endpoint,
+			Model:     model,
+			APIKey:    apiKey,
+			MaxTokens: 4096,
+		})
+
+		// Wire tool definitions to the LLM provider so the model knows
+		// what tools are available for function calling.
+		provider.SetTools(buildToolDefinitions(toolReg))
+
+		return provider
+	}
+
+	// Fall back to mock provider
+	fmt.Fprintln(os.Stderr, "  ⚠️  No API key configured. Using mock provider (run 'harness key setup' to configure)")
+	mock := llm.NewMockProvider(nil)
+	mock.SetHandler(func(messages []llm.Message) (llm.Response, error) {
+		return llm.NewResponse(
+			llm.NewMessage(llm.RoleAssistant, "No API key configured. Run 'harness key setup' to set your OpenAI API key."),
+			llm.FinishReasonStop,
+		), nil
+	})
+	return mock
 }
 
 func printUsage() {

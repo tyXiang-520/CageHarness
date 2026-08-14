@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/tyXiang-520/CageHarness/internal/runtime"
@@ -49,19 +50,63 @@ func NewServer(tm *runtime.TaskManager, loop *runtime.AgentLoop) *Server {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleIndex)
+	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/tasks", s.handleTasks)
 	mux.HandleFunc("/tasks/", s.handleTaskByID)
-	return mux
+	return corsMiddleware(mux)
+}
+
+// corsMiddleware adds CORS headers so the page works even when downloaded
+// and opened from the local filesystem (file://).
+func corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
 }
 
 // handleIndex serves the embedded WebUI HTML page.
+// SCF function URLs detect Content-Type by URL extension,
+// so / redirects to /index.html to get text/html treatment.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
+	path := r.URL.Path
+
+	// Redirect bare / to /index.html (SCF Content-Type workaround)
+	if path == "/" {
+		http.Redirect(w, r, "/index.html", http.StatusFound)
 		return
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(indexHTML)
+
+	if path == "/index.html" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Length", strconv.Itoa(len(indexHTML)))
+		w.WriteHeader(http.StatusOK)
+		w.Write(indexHTML)
+		// Force flush to prevent SCF from buffering and overriding headers
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		return
+	}
+
+	http.NotFound(w, r)
+}
+
+// handleHealth returns a simple health check.
+func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	body := []byte("OK")
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.WriteHeader(http.StatusOK)
+	w.Write(body)
 }
 
 // Start begins listening on the given address and serving HTTP requests.

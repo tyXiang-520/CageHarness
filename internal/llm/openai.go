@@ -21,10 +21,18 @@ type OpenAIConfig struct {
 	Timeout   time.Duration `yaml:"timeout"`
 }
 
+// ToolDefinition describes a tool for the LLM.
+type ToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  map[string]any // JSON Schema for the tool's parameters
+}
+
 // OpenAIProvider implements the Provider interface for OpenAI-compatible APIs.
 type OpenAIProvider struct {
-	config   OpenAIConfig
-	client   *http.Client
+	config OpenAIConfig
+	client *http.Client
+	tools  []ToolDefinition
 }
 
 // NewOpenAIProvider creates a new OpenAI provider.
@@ -42,25 +50,57 @@ func NewOpenAIProvider(config OpenAIConfig) *OpenAIProvider {
 	}
 }
 
+// SetTools configures the tool definitions sent to the LLM.
+func (p *OpenAIProvider) SetTools(tools []ToolDefinition) {
+	p.tools = tools
+}
+
 // openAIRequest is the request body for the OpenAI chat completions API.
 type openAIRequest struct {
-	Model       string          `json:"model"`
-	Messages    []openAIMessage `json:"messages"`
-	MaxTokens   int             `json:"max_tokens,omitempty"`
-	Stream      bool            `json:"stream,omitempty"`
+	Model     string          `json:"model"`
+	Messages  []openAIMessage `json:"messages"`
+	MaxTokens int             `json:"max_tokens,omitempty"`
+	Tools     []openAIToolDef `json:"tools,omitempty"`
+	Stream    bool            `json:"stream,omitempty"`
+}
+
+// openAIToolDef is a tool definition in the OpenAI API format.
+type openAIToolDef struct {
+	Type     string                `json:"type"`
+	Function openAIToolFunctionDef `json:"function"`
+}
+
+// openAIToolFunctionDef is the function definition for a tool.
+type openAIToolFunctionDef struct {
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Parameters  jsonParameters `json:"parameters"`
+}
+
+// jsonParameters is a JSON Schema object for tool parameters.
+type jsonParameters struct {
+	Type       string                  `json:"type"`
+	Properties map[string]jsonProperty `json:"properties"`
+	Required   []string                `json:"required,omitempty"`
+}
+
+// jsonProperty is a single property in a JSON Schema.
+type jsonProperty struct {
+	Type        string `json:"type"`
+	Description string `json:"description"`
 }
 
 // openAIMessage is a message in the OpenAI API format.
 type openAIMessage struct {
-	Role      string          `json:"role"`
-	Content   string          `json:"content"`
-	ToolCalls []openAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string         `json:"tool_call_id,omitempty"`
+	Role       string           `json:"role"`
+	Content    string           `json:"content"`
+	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string           `json:"tool_call_id,omitempty"`
 }
 
 type openAIToolCall struct {
-	ID       string               `json:"id"`
-	Type     string               `json:"type"`
+	ID       string                 `json:"id"`
+	Type     string                 `json:"type"`
 	Function openAIToolCallFunction `json:"function"`
 }
 
@@ -71,19 +111,19 @@ type openAIToolCallFunction struct {
 
 // openAIResponse is the response body from the OpenAI chat completions API.
 type openAIResponse struct {
-	ID      string             `json:"id"`
-	Object  string             `json:"object"`
-	Created int64              `json:"created"`
-	Model   string             `json:"model"`
-	Choices []openAIChoice     `json:"choices"`
-	Usage   *openAIUsage       `json:"usage,omitempty"`
-	Error   *openAIError       `json:"error,omitempty"`
+	ID      string         `json:"id"`
+	Object  string         `json:"object"`
+	Created int64          `json:"created"`
+	Model   string         `json:"model"`
+	Choices []openAIChoice `json:"choices"`
+	Usage   *openAIUsage   `json:"usage,omitempty"`
+	Error   *openAIError   `json:"error,omitempty"`
 }
 
 type openAIChoice struct {
-	Index        int             `json:"index"`
-	Message      openAIMessage   `json:"message"`
-	FinishReason string          `json:"finish_reason"`
+	Index        int           `json:"index"`
+	Message      openAIMessage `json:"message"`
+	FinishReason string        `json:"finish_reason"`
 }
 
 type openAIUsage struct {
@@ -137,10 +177,58 @@ func (p *OpenAIProvider) Generate(ctx context.Context, messages []Message) (Resp
 		openAIMsgs[i] = m
 	}
 
+	// Build tool definitions
+	var toolDefs []openAIToolDef
+	for _, td := range p.tools {
+		props := make(map[string]jsonProperty)
+		var required []string
+		if td.Parameters != nil {
+			for k, v := range td.Parameters {
+				propMap, ok := v.(map[string]any)
+				if !ok {
+					continue
+				}
+				prop := jsonProperty{}
+				if propType, ok := propMap["type"].(string); ok {
+					prop.Type = propType
+				}
+				if propDesc, ok := propMap["description"].(string); ok {
+					prop.Description = propDesc
+				}
+				props[k] = prop
+
+				// Check if this parameter is required
+				if requiredVal, ok := propMap["required"].(bool); ok && requiredVal {
+					required = append(required, k)
+				}
+			}
+		}
+		// Default: all parameters are required
+		if len(required) == 0 && len(props) > 0 {
+			for k := range props {
+				required = append(required, k)
+			}
+		}
+
+		toolDefs = append(toolDefs, openAIToolDef{
+			Type: "function",
+			Function: openAIToolFunctionDef{
+				Name:        td.Name,
+				Description: td.Description,
+				Parameters: jsonParameters{
+					Type:       "object",
+					Properties: props,
+					Required:   required,
+				},
+			},
+		})
+	}
+
 	reqBody := openAIRequest{
 		Model:     p.config.Model,
 		Messages:  openAIMsgs,
 		MaxTokens: p.config.MaxTokens,
+		Tools:     toolDefs,
 	}
 
 	body, err := json.Marshal(reqBody)

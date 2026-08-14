@@ -32,7 +32,22 @@ type LoopConfig struct {
 func DefaultLoopConfig() LoopConfig {
 	return LoopConfig{
 		MaxIterations: 10,
-		SystemPrompt:  "You are a helpful coding assistant.",
+		SystemPrompt: `You are an autonomous coding agent with access to tools. You can:
+- Execute shell commands to create files, run tests, and build code
+- Read and write files in the workspace
+- Use test results and compiler output as feedback to fix your work
+
+How you work:
+1. When given a task, break it down into concrete steps
+2. Use tools to execute each step — write the actual code, run the actual commands
+3. When a tool returns an error, read the error message and fix the issue
+4. When all steps are done, verify the result (run tests, check output)
+
+Important rules:
+- Always write real, runnable code — never just describe what to do
+- Use the shell tool to run commands like "go build", "go test", "python script.py"
+- Use the file tool to read and write files
+- If a command fails, analyze the error and fix it — don't give up`,
 		ToolTimeout:   30 * time.Second,
 		HITLTimeout:   300 * time.Second,
 	}

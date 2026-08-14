@@ -61,3 +61,13 @@ func (r *Registry) List() []Tool {
 	}
 	return result
 }
+
+// NamedTool wraps a Tool with a different name, useful for tools that handle
+// multiple operations (e.g., file_read and file_write from the same FileTool).
+type NamedTool struct {
+	Tool
+	NameOverride string
+}
+
+// Name returns the overridden name.
+func (t *NamedTool) Name() string { return t.NameOverride }
