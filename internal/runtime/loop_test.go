@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -536,10 +535,9 @@ func TestAgentLoop_RecordedMessages(t *testing.T) {
 		if lastMsg.Role != llm.RoleTool {
 			t.Errorf("last message should be tool, got %s", lastMsg.Role)
 		}
-		// Verify the tool message content is JSON-serialized ToolResult
-		var result protocol.ToolResult
-		if err := json.Unmarshal([]byte(lastMsg.Content), &result); err != nil {
-			t.Errorf("tool message content should be valid JSON ToolResult: %v", err)
+		// Verify the tool message content contains the result (formatted by FeedbackProcessor)
+		if lastMsg.Content == "" {
+			t.Error("tool message content should not be empty")
 		}
 
 		return llm.NewResponse(

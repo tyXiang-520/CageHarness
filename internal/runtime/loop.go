@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/tyXiang-520/CageHarness/internal/agent"
+	"github.com/tyXiang-520/CageHarness/internal/feedback"
 	"github.com/tyXiang-520/CageHarness/internal/governance"
 	"github.com/tyXiang-520/CageHarness/internal/llm"
 	"github.com/tyXiang-520/CageHarness/internal/protocol"
@@ -67,6 +68,7 @@ type AgentLoop struct {
 	iterations       int
 	stateTransitions []StateTransition
 	hitlHandler      HITLHandler
+	feedback         *feedback.FeedbackProcessor
 }
 
 // NewAgentLoop creates a new AgentLoop.
@@ -77,6 +79,7 @@ func NewAgentLoop(llmProvider llm.Provider, gov *governance.Pipeline, toolReg *t
 		governance: gov,
 		tools:      toolReg,
 		config:     config,
+		feedback:   feedback.NewFeedbackProcessor(),
 	}
 }
 
@@ -210,14 +213,12 @@ func (a *AgentLoop) executeToolCall(ctx context.Context, tc llm.ToolCall) error 
 	// Attach result to action
 	action.WithResult(&result)
 
-	// Serialize the result as JSON for the tool message
-	resultJSON, err := json.Marshal(result)
-	if err != nil {
-		return fmt.Errorf("serialize tool result: %w", err)
-	}
+	// Process through feedback to get structured observation
+	obs := a.feedback.Process(tc.Function.Name, result)
+	obsMsg := obs.FormatForLLM()
 
-	// Append the tool result to the conversation
-	a.messages = append(a.messages, llm.NewToolMessage(tc.ID, string(resultJSON)))
+	// Append the observation as a tool message
+	a.messages = append(a.messages, llm.NewToolMessage(tc.ID, obsMsg))
 
 	return nil
 }
