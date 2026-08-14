@@ -9,42 +9,42 @@
 
 ## A. 依赖方向检查
 
-### 实际依赖图
+### 实际依赖图（编译时）
 
 ```
-protocol (shared domain types)
-  ↑       ↑        ↑
-agent  governance  tools
+             protocol (shared domain types)
+               ↑
+    ┌──────────┼──────────┐
+    │          │          │
+  agent   governance    tools
+
+Domain Model + Independent Services 模式
+三个包是兄弟关系，非调用链关系
 ```
 
-### 逐包验证
-
-| 包 | 导入 | 结论 |
-|---|------|------|
-| `internal/protocol/` | 仅标准库 | ✅ 无内部依赖 |
-| `internal/agent/` | `protocol` + 标准库 | ✅ 不导入 governance / tools |
-| `internal/governance/` | `protocol` + 标准库 | ✅ 不导入 agent / tools |
-| `internal/tools/` | `protocol` + 标准库 | ✅ 不导入 governance / agent |
-
-### 运行时调用链
+### 运行时调用链（Phase 7 实现）
 
 ```
-Agent (orchestrator)
+AgentRuntime (orchestrator，可能在 cmd/ 或 internal/runtime/)
   │
-  │  import governance, import tools
-  │  action := protocol.NewAction(...)
+  │  同时 import agent, governance, tools, protocol
   │
-  ├─→ governance.Pipeline.Evaluate(action)
-  │     └─→ PipelineResult (Allow / Deny / RequireApproval / Escalate)
-  │
-  ├─→ if HITL required:
-  │     └─→ governance.Pipeline.ApproveHITL(action, auth)
-  │
-  └─→ tools.GovernedTool.Execute(action)
-        └─→ tools.Tool.Execute(action)
+  ├─→ llm.Generate(messages)          // LLM 思考
+  ├─→ governance.Pipeline.Evaluate()  // 治理判断
+  ├─→ tools.Registry.Execute()        // 工具执行
+  └─→ agent.NewObservation()          // 观察记录
 ```
 
-**关键结论**：所有三个包通过 `protocol.Action` 进行通信，而非直接导入。Agent 作为编排者会同时导入 `governance` 和 `tools`，但这是正确的方向——Agent 负责 orchestration，不拥有 Governance 逻辑。
+**关键区分**：编译时依赖 ≠ 运行时调用链。
+
+- **编译时**：`agent`、`governance`、`tools` 三个包互相独立，仅共享 `protocol` 类型
+- **运行时**：AgentRuntime 作为编排器，按顺序调用各模块
+
+这是比最初设想的 `agent → governance → tools` 包依赖链更高级的设计：
+- Agent 不强绑定治理实现
+- Governance 可独立测试
+- Tool 层可复用
+- 运行时组装，而非编译时耦合
 
 ### 反向依赖检查
 
@@ -221,10 +221,13 @@ LLM 基于 tool result 继续决策
 
 | 检查项 | 状态 |
 |--------|------|
-| A. 依赖方向（agent → governance → tools，无反向） | ✅ PASS |
+| A. 依赖方向（protocol ← agent/governance/tools，兄弟关系，无反向） | ✅ PASS |
 | B. Action 类型唯一来源（protocol/action.go） | ✅ PASS |
 | C. AgentState 唯一状态源（7 状态机） | ✅ PASS |
 | D. Phase 7 验收标准明确 | ✅ 已定义 |
 | E. 功能范围不膨胀 | ✅ 已约束 |
+| F. 编译时依赖 ≠ 运行时调用链（Phase 7 不在 agent 包中 import governance） | ✅ 已明确 |
 
 **Phase 6 Gate Review: ✅ 通过。可以进入 Phase 7 Agent Loop。**
+
+**Phase 7 关键约束**：保持当前 package DAG，不为实现调用链而增加 `agent→governance` 或 `governance→tools` 的 import。运行时编排链在 AgentRuntime 层组装，而非包依赖层实现。
