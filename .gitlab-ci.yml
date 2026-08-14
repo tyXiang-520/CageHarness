@@ -13,11 +13,12 @@ unit-test:
   before_script:
     - apk add --no-cache make
   script:
-    - go mod tidy
     - go vet ./...
-    - go test ./... -v -count=1
-  coverage: '/\s+coverage:\s+(\d+\.\d+)%/'
+    - go test ./internal/... -count=1 -cover
+    - go test ./tests/demo/ -v -count=1
+  coverage: '/coverage: (\d+\.\d+)% of statements/'
   artifacts:
+    when: always
     paths:
       - coverage.*
     expire_in: 30 days
@@ -26,7 +27,6 @@ build-binary:
   stage: build
   image: golang:${GO_VERSION}-alpine
   script:
-    - go mod tidy
     - go build -ldflags="-s -w" -o ${BINARY_NAME} ./cmd/harness
   artifacts:
     paths:
