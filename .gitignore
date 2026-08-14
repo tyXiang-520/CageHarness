@@ -1,6 +1,7 @@
 # Binaries
 /harness
-build/
+build/*
+!build/.gitkeep
 
 # Environment files
 .env
