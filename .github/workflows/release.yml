@@ -1,0 +1,173 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  # ── Build all platform binaries ──────────────────────────
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - name: linux-amd64
+            goos: linux
+            goarch: amd64
+            ext: ""
+          - name: linux-arm64
+            goos: linux
+            goarch: arm64
+            ext: ""
+          - name: darwin-amd64
+            goos: darwin
+            goarch: amd64
+            ext: ""
+          - name: darwin-arm64
+            goos: darwin
+            goarch: arm64
+            ext: ""
+          - name: windows-amd64
+            goos: windows
+            goarch: amd64
+            ext: ".exe"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build
+        run: |
+          GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -ldflags="-s -w" \
+            -o harness-${{ matrix.name }}${{ matrix.ext }} \
+            ./cmd/harness
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-${{ matrix.name }}
+          path: harness-${{ matrix.name }}${{ matrix.ext }}
+
+  # ── Build SCF binary (Linux amd64, static) ───────────────
+  build-scf:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+
+      - name: Build SCF binary
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+            go build -ldflags="-s -w" \
+            -o harness-scf \
+            ./cmd/harness
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: harness-scf
+          path: harness-scf
+
+  # ── Create GitHub Release ────────────────────────────────
+  release:
+    needs: [build, build-scf]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+          # Move all platform binaries
+          cp harness-linux-amd64/harness-linux-amd64       release/
+          cp harness-linux-arm64/harness-linux-arm64       release/
+          cp harness-darwin-amd64/harness-darwin-amd64     release/
+          cp harness-darwin-arm64/harness-darwin-arm64     release/
+          cp harness-windows-amd64/harness-windows-amd64.exe release/
+          cp harness-scf/harness-scf                       release/
+          # Generate checksums
+          cd release && sha256sum * > checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "CageHarness ${{ github.ref_name }}"
+          body: |
+            ## 🛡️ CageHarness ${{ github.ref_name }}
+
+            AI4SE Coding Agent Harness — Governance-driven, zero-dependency, TDD-built.
+
+            ### 📥 Downloads
+
+            | Platform | File |
+            |----------|------|
+            | Windows (amd64) | `harness-windows-amd64.exe` |
+            | macOS (Intel) | `harness-darwin-amd64` |
+            | macOS (Apple Silicon) | `harness-darwin-arm64` |
+            | Linux (amd64) | `harness-linux-amd64` |
+            | Linux (arm64) | `harness-linux-arm64` |
+            | SCF (腾讯云) | `harness-scf` |
+
+            ### 🚀 Quick Start
+
+            ```bash
+            # 1. 配置 API key（隐藏输入）
+            ./harness key setup
+
+            # 2. 运行任务
+            ./harness run "write a hello world program in Go"
+
+            # 3. 启动 WebUI
+            ./harness serve
+            # 访问 http://localhost:8080
+            ```
+
+            ### 🐳 Docker
+
+            ```bash
+            docker pull ghcr.io/${{ github.repository_owner }}/cageharness:${{ github.ref_name }}
+            docker run -p 8080:8080 ghcr.io/${{ github.repository_owner }}/cageharness:${{ github.ref_name }}
+            ```
+
+            ### 🔗 Links
+
+            - [在线 Demo](https://your-scf-url.cos.ap-hongkong.myqcloud.com)
+            - [源代码](https://github.com/${{ github.repository }})
+            - [SPEC](https://github.com/${{ github.repository }}/blob/main/SPEC.md)
+          files: release/*
+          draft: false
+          prerelease: false
+
+  # ── Build & push Docker image ────────────────────────────
+  docker:
+    needs: [build]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build & push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/cageharness:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/cageharness:latest

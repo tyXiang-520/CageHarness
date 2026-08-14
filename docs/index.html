@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CageHarness — AI4SE Coding Agent Harness</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --border: #30363d;
+    --text: #c9d1d9;
+    --muted: #8b949e;
+    --accent: #58a6ff;
+    --green: #3fb950;
+    --orange: #d2991d;
+    --red: #f85149;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+  .container { max-width: 900px; margin: 0 auto; padding: 0 24px; }
+
+  /* Hero */
+  .hero {
+    text-align: center;
+    padding: 80px 0 48px;
+  }
+  .hero .shield { font-size: 64px; margin-bottom: 16px; }
+  .hero h1 {
+    font-size: 48px;
+    font-weight: 800;
+    background: linear-gradient(135deg, var(--accent), var(--green));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    margin-bottom: 12px;
+  }
+  .hero .tagline {
+    font-size: 20px;
+    color: var(--muted);
+    margin-bottom: 8px;
+  }
+  .hero .badges {
+    display: flex;
+    justify-content: center;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 20px;
+  }
+  .badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .badge.go { color: #00ADD8; border-color: #00ADD8; }
+  .badge.zero { color: var(--green); border-color: var(--green); }
+  .badge.gov { color: var(--orange); border-color: var(--orange); }
+
+  /* Feature Grid */
+  .features {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 20px;
+    padding: 48px 0;
+  }
+  .feature {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    transition: border-color .2s;
+  }
+  .feature:hover { border-color: var(--accent); }
+  .feature .icon { font-size: 28px; margin-bottom: 12px; }
+  .feature h3 { font-size: 16px; margin-bottom: 8px; }
+  .feature p { font-size: 14px; color: var(--muted); }
+
+  /* Pipeline Diagram */
+  .pipeline {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px;
+    margin: 0 0 48px;
+    text-align: center;
+  }
+  .pipeline h2 { margin-bottom: 24px; font-size: 22px; }
+  .pipe-stages {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0;
+    flex-wrap: wrap;
+  }
+  .pipe-stage {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 16px;
+    font-size: 13px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .pipe-arrow {
+    color: var(--muted);
+    margin: 0 4px;
+    font-size: 18px;
+  }
+
+  /* Download Section */
+  .downloads {
+    padding: 48px 0;
+  }
+  .downloads h2 {
+    text-align: center;
+    font-size: 28px;
+    margin-bottom: 32px;
+  }
+  .dl-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+  }
+  .dl-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 24px;
+    text-align: center;
+    text-decoration: none;
+    color: var(--text);
+    transition: border-color .2s, transform .2s;
+  }
+  .dl-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+  }
+  .dl-card .os-icon { font-size: 32px; margin-bottom: 8px; }
+  .dl-card .os-name { font-weight: 700; margin-bottom: 4px; }
+  .dl-card .os-arch { font-size: 13px; color: var(--muted); }
+  .dl-card .dl-btn {
+    display: inline-block;
+    margin-top: 12px;
+    padding: 6px 20px;
+    background: var(--accent);
+    color: #fff;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  /* Demo Link */
+  .demo {
+    text-align: center;
+    padding: 32px 0 48px;
+  }
+  .demo a {
+    display: inline-block;
+    padding: 14px 40px;
+    background: var(--green);
+    color: #fff;
+    border-radius: 8px;
+    font-size: 18px;
+    font-weight: 700;
+    text-decoration: none;
+    transition: opacity .2s;
+  }
+  .demo a:hover { opacity: 0.9; }
+  .demo .demo-hint {
+    font-size: 13px;
+    color: var(--muted);
+    margin-top: 8px;
+  }
+
+  /* Quick Start */
+  .quickstart {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 32px;
+    margin: 0 0 48px;
+  }
+  .quickstart h2 { margin-bottom: 16px; }
+  .quickstart pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    font-size: 14px;
+    line-height: 1.8;
+  }
+  .quickstart code { color: var(--green); }
+
+  /* Footer */
+  .footer {
+    text-align: center;
+    padding: 48px 0;
+    color: var(--muted);
+    font-size: 14px;
+    border-top: 1px solid var(--border);
+  }
+  .footer a { color: var(--accent); text-decoration: none; }
+  .footer a:hover { text-decoration: underline; }
+
+  @media (max-width: 640px) {
+    .hero h1 { font-size: 32px; }
+    .hero .tagline { font-size: 16px; }
+    .pipe-stages { gap: 4px; }
+    .pipe-stage { font-size: 11px; padding: 6px 10px; }
+  }
+</style>
+</head>
+<body>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="container">
+    <div class="shield">🛡️</div>
+    <h1>CageHarness</h1>
+    <p class="tagline">AI4SE Coding Agent Harness — Governance-Driven, Zero-Dependency</p>
+    <div class="badges">
+      <span class="badge go">Go 1.23</span>
+      <span class="badge zero">零外部依赖</span>
+      <span class="badge gov">5 层治理管道</span>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section class="container">
+  <div class="features">
+    <div class="feature">
+      <div class="icon">🔒</div>
+      <h3>Governance Pipeline</h3>
+      <p>Schema → Risk → Policy → Boundary → Control 五层治理管道，每一步操作都经过审计</p>
+    </div>
+    <div class="feature">
+      <div class="icon">🖥️</div>
+      <h3>WebUI</h3>
+      <p>内置深色主题 Web 界面，可视化治理管道、审计日志和风险等级</p>
+    </div>
+    <div class="feature">
+      <div class="icon">💻</div>
+      <h3>CLI</h3>
+      <p>命令行接口，支持 run / submit / status / list / cancel / serve / key</p>
+    </div>
+    <div class="feature">
+      <div class="icon">🔑</div>
+      <h3>凭据安全</h3>
+      <p>交互式引导录入 API Key，OS 原生密钥链存储，绝不明文显示</p>
+    </div>
+    <div class="feature">
+      <div class="icon">🐳</div>
+      <h3>Docker</h3>
+      <p>多阶段构建，Alpine 镜像，开箱即用</p>
+    </div>
+    <div class="feature">
+      <div class="icon">📦</div>
+      <h3>零依赖</h3>
+      <p>纯 Go 标准库实现，无任何第三方依赖，编译快、镜像小</p>
+    </div>
+  </div>
+</section>
+
+<!-- Governance Pipeline -->
+<section class="container">
+  <div class="pipeline">
+    <h2>🛡️ 5-Layer Governance Pipeline</h2>
+    <div class="pipe-stages">
+      <div class="pipe-stage">Schema</div>
+      <span class="pipe-arrow">→</span>
+      <div class="pipe-stage">Risk</div>
+      <span class="pipe-arrow">→</span>
+      <div class="pipe-stage">Policy</div>
+      <span class="pipe-arrow">→</span>
+      <div class="pipe-stage">Boundary</div>
+      <span class="pipe-arrow">→</span>
+      <div class="pipe-stage">Control</div>
+      <span class="pipe-arrow">→</span>
+      <div class="pipe-stage" style="border-color:var(--green);color:var(--green)">Decision</div>
+    </div>
+  </div>
+</section>
+
+<!-- Downloads -->
+<section class="container downloads">
+  <h2>📥 下载</h2>
+  <div class="dl-grid">
+    <a class="dl-card" href="https://github.com/tyXiang-520/CageHarness/releases/latest/download/harness-windows-amd64.exe">
+      <div class="os-icon">🪟</div>
+      <div class="os-name">Windows</div>
+      <div class="os-arch">amd64</div>
+      <span class="dl-btn">下载 .exe</span>
+    </a>
+    <a class="dl-card" href="https://github.com/tyXiang-520/CageHarness/releases/latest/download/harness-darwin-amd64">
+      <div class="os-icon">🍎</div>
+      <div class="os-name">macOS Intel</div>
+      <div class="os-arch">amd64</div>
+      <span class="dl-btn">下载</span>
+    </a>
+    <a class="dl-card" href="https://github.com/tyXiang-520/CageHarness/releases/latest/download/harness-darwin-arm64">
+      <div class="os-icon">🍎</div>
+      <div class="os-name">macOS Apple Silicon</div>
+      <div class="os-arch">arm64</div>
+      <span class="dl-btn">下载</span>
+    </a>
+    <a class="dl-card" href="https://github.com/tyXiang-520/CageHarness/releases/latest/download/harness-linux-amd64">
+      <div class="os-icon">🐧</div>
+      <div class="os-name">Linux</div>
+      <div class="os-arch">amd64</div>
+      <span class="dl-btn">下载</span>
+    </a>
+    <a class="dl-card" href="https://github.com/tyXiang-520/CageHarness/releases/latest/download/harness-linux-arm64">
+      <div class="os-icon">🐧</div>
+      <div class="os-name">Linux</div>
+      <div class="os-arch">arm64</div>
+      <span class="dl-btn">下载</span>
+    </a>
+    <a class="dl-card" href="https://github.com/tyXiang-520/CageHarness/releases/latest">
+      <div class="os-icon">🐳</div>
+      <div class="os-name">Docker</div>
+      <div class="os-arch">ghcr.io</div>
+      <span class="dl-btn">查看镜像</span>
+    </a>
+  </div>
+</section>
+
+<!-- Live Demo -->
+<section class="container demo">
+  <a href="https://your-scf-url.cos.ap-hongkong.myqcloud.com" target="_blank" rel="noopener">
+    🌐 在线体验 Demo
+  </a>
+  <p class="demo-hint">部署在腾讯云 SCF 香港节点，无需备案</p>
+</section>
+
+<!-- Quick Start -->
+<section class="container">
+  <div class="quickstart">
+    <h2>🚀 快速开始</h2>
+    <pre><code># 1. 配置 API Key（交互式引导，隐藏输入）
+./harness key setup
+
+# 2. 运行任务
+./harness run "write a hello world program in Go"
+
+# 3. 启动 WebUI
+./harness serve
+# 访问 http://localhost:8080</code></pre>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer class="footer">
+  <div class="container">
+    <p>
+      <a href="https://github.com/tyXiang-520/CageHarness">GitHub</a> ·
+      <a href="https://github.com/tyXiang-520/CageHarness/blob/main/SPEC.md">SPEC</a> ·
+      <a href="https://github.com/tyXiang-520/CageHarness/releases">Releases</a>
+    </p>
+    <p style="margin-top:8px">Built with Go · Zero Dependencies · AI4SE Final Project</p>
+  </div>
+</footer>
+
+</body>
+</html>

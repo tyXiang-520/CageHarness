@@ -109,12 +109,17 @@ func main() {
 
 	case "serve":
 		port := "8080"
+		// SCF / cloud hosting: respect PORT environment variable
+		if envPort := os.Getenv("PORT"); envPort != "" {
+			port = envPort
+		}
+		// CLI argument overrides both default and env
 		if len(os.Args) >= 3 {
 			port = os.Args[2]
 		}
 		addr := ":" + port
 		srv := web.NewServer(tm, loop)
-		fmt.Printf("\n  CageHarness WebUI starting at http://localhost%s\n\n", addr)
+		fmt.Printf("\n  CageHarness WebUI starting at http://0.0.0.0%s\n\n", addr)
 		fmt.Println("  Governance Pipeline: Schema → Risk → Policy → Boundary → Control")
 		fmt.Println("  Press Ctrl+C to stop")
 		if err := srv.Start(addr); err != nil {
