@@ -8,7 +8,8 @@ import (
 
 // Retriever searches MemoryEntry objects by keyword matching.
 type Retriever struct {
-	store *FileStore
+	store    *FileStore
+	MinScore int // Minimum score threshold for a result to be included (default 0 = no filter).
 }
 
 // NewRetriever creates a new Retriever backed by the given store.
@@ -40,7 +41,7 @@ func (r *Retriever) Retrieve(query string, limit int) []MemoryEntry {
 	var scored []scoredEntry
 	for _, entry := range entries {
 		score := r.scoreEntry(entry, query, queryWords)
-		if score > 0 {
+		if score > 0 && score >= r.MinScore {
 			scored = append(scored, scoredEntry{entry: entry, score: score})
 		}
 	}

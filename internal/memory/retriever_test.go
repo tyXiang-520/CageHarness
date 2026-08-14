@@ -189,3 +189,42 @@ func TestRetriever_UpdatesAccessedAt(t *testing.T) {
 		t.Error("AccessedAt should be updated after retrieval")
 	}
 }
+
+func TestRetriever_MinScore(t *testing.T) {
+	store, _ := tempStore(t)
+
+	// Strong entry: "golang error" matches both content words (2+2=4) and tags (3+3=6) = 10
+	strong := NewMemoryEntry(MemoryTypeLongTerm, "golang error handling best practices", map[string]any{
+		"tags": "golang,error,handling",
+	})
+	// Weak entry: only "error" matches in content (2 pts), tags don't match = 2
+	weak := NewMemoryEntry(MemoryTypeLongTerm, "error logging in production", map[string]any{
+		"tags": "general",
+	})
+
+	if err := store.Save(strong); err != nil {
+		t.Fatalf("Save strong: %v", err)
+	}
+	if err := store.Save(weak); err != nil {
+		t.Fatalf("Save weak: %v", err)
+	}
+
+	retriever := NewRetriever(store)
+
+	// Without MinScore, both should be found (scores 10 and 2)
+	results := retriever.Retrieve("golang error", 5)
+	if len(results) != 2 {
+		t.Errorf("without MinScore: expected 2 results, got %d", len(results))
+	}
+
+	// With MinScore=3, only the strong match (score 10) should appear
+	// Weak match (score 2) is filtered out
+	retriever.MinScore = 3
+	results = retriever.Retrieve("golang error", 5)
+	if len(results) != 1 {
+		t.Errorf("with MinScore=3: expected 1 result, got %d", len(results))
+	}
+	if len(results) > 0 && results[0].ID != strong.ID {
+		t.Errorf("expected strong match, got %s", results[0].ID)
+	}
+}

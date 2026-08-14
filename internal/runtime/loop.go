@@ -89,9 +89,12 @@ func NewAgentLoop(llmProvider llm.Provider, gov *governance.Pipeline, toolReg *t
 
 // SetMemory configures the memory store and retriever for the Agent Loop.
 // When set, relevant memories are injected into the system prompt on each Run() invocation.
+// A minimum score threshold of 3 is applied to filter out low-quality matches
+// (at least one tag word match or two content word matches).
 func (a *AgentLoop) SetMemory(store *memory.FileStore) {
 	a.memoryStore = store
 	a.memoryRetriever = memory.NewRetriever(store)
+	a.memoryRetriever.MinScore = 3
 }
 
 // Run executes the main agent loop for a given task.
