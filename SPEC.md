@@ -3,9 +3,9 @@
 > **Spec-Driven, Subagent-Built, Human-Owned.**
 >
 > 项目：AI4SE 期末项目 — A · Coding Agent Harness
-> 技术栈：Go
+> 技术栈：Go 1.22+
 > 深入维度：治理（Governance — 护栏 + 沙箱 + HITL + 审计）
-> 版本：V2.2（最终冻结）
+> 版本：V3.0（与实现同步）
 
 ---
 
@@ -162,236 +162,227 @@ LLM 相当于 CPU，只负责"决定下一步做什么"这一行任务决策；�
 
 ## 3. 功能规约
 
-### 3.1 Agent 主循环（`internal/agent/`）
+### 3.1 Agent 主循环（`internal/runtime/loop.go`）
 
-| 功能 | 描述 | 输入 | 输出 | 边界条件 |
-|------|------|------|------|---------|
-| 状态初始化 | 创建 AgentState，设置 Goal 和初始 Status=Idle | 任务描述字符串、配置 | AgentState 实例 | 任务描述为空时返回错误 |
-| 上下文组装 | 将 system prompt、messages、memory 条目、observation 组装为 LLM 请求 | AgentState + Memory 条目 | Message 列表 | 超过上下文窗口限制时截断早期消息 |
-| 主循环迭代 | 1→2→3→4→5→6→1 循环执行 | 当前 AgentState | 更新后的 AgentState | 达到 StopCondition 时退出循环 |
-| 停机判断 | 检查 5 种 StopCondition | 当前 AgentState | StopCondition + 最终 Status | 多个条件同时满足时按优先级：Completed > HumanRejected > Unrecoverable > Timeout > MaxIterations |
-| 退出码映射 | 将最终 Status 映射为进程退出码 | AgentStatus | ExitCode 常量 | 统一映射，不散落 `os.Exit(N)` |
+AgentLoop 是 runtime 包的 composition root——它导入所有 domain 包（agent, governance, tools, llm, feedback, protocol），在运行时组装。
+
+| 功能 | 描述 | 实现 |
+|------|------|------|
+| 状态初始化 | 从 AgentStateIdle 开始，设置 LoopConfig | `NewAgentLoop(llm, gov, tools, config)` |
+| 上下文组装 | 将 system prompt + memory 注入 + messages 组装为 LLM 请求 | `buildSystemPrompt(task)` — 注入匹配的记忆 |
+| 主循环 | Think → Decide → Act → Observe 循环 | `Run(ctx, task)` — 最多 MaxIterations 轮 |
+| Think 阶段 | 调用 LLM Generate | `llm.Generate(ctx, messages)` |
+| Decide 阶段 | 运行 Governance Pipeline | `governance.Evaluate(action)` |
+| Act 阶段 | 通过 Governance 后执行工具 | `tool.Validate(action)` → `tool.Execute(action)` |
+| Observe 阶段 | 处理工具结果，生成 FeedbackObservation | `feedback.Process(toolName, result)` |
+| 停机判断 | FinishReasonStop / Error / MaxIterations | 达到 MaxIterations 返回 error |
+| Memory 注入 | 检索相关记忆，注入 System Prompt | `SetMemory(store)` — MinScore=3 阈值过滤 |
+
+**状态转换**（通过 `AgentState.TransitionTo()` 验证）：
+
+```
+Idle → Thinking → Executing | AwaitingApproval | Error | Terminated
+AwaitingApproval → Executing | Error | Terminated
+Executing → Observing | Error | Terminated
+Observing → Thinking | Error | Terminated
+Error → Terminated
+```
+
+每次状态转换记录为 `StateTransition{From, To, Timestamp}`，可通过 `StateTransitions()` 获取转换历史。
 
 ### 3.2 LLM 抽象层（`internal/llm/`）
 
-| 功能 | 描述 | 输入 | 输出 | 边界条件 |
-|------|------|------|------|---------|
-| Chat 接口 | 统一交互接口 | `[]Message` | `(Response, error)` | 网络超时、API 错误、空响应均返回 error |
-| OpenAI Provider | 对接 OpenAI 兼容 API | `[]Message` + API key + 端点配置 | `(Response, error)` | 认证失败、速率限制、模型不可用均返回明确的 error 类型 |
-| Mock Provider | 脚本驱动，预定义响应序列 | `[]Message` + `ResponseScript` | `(Response, error)` | 脚本耗尽时返回 error；可配置中间失败 |
+| 功能 | 描述 | 实现 |
+|------|------|------|
+| Provider 接口 | 统一交互接口 | `Generate(ctx, messages) (Response, error)` |
+| Message 类型 | 多角色消息 | `RoleSystem/User/Assistant/Tool` + `ToolCall` + `ToolCallFunction` |
+| Response 类型 | LLM 响应 | `Message + FinishReason + Usage` |
+| MockProvider | 测试用，支持两种模式 | 序列模式（预定义响应）+ 函数模式（动态响应） |
+| OpenAI Provider | 真实 LLM 对接 | 待实现 |
 
-**Mock Provider 设计**：
+**MockProvider 两种模式**：
 
-MockProvider 需要支持两种模式，以满足不同测试场景：
-
-**模式一：序列模式（Sequence Mode）** — 按预定义顺序返回响应，适合简单场景：
-
+**模式一：序列模式（Sequence Mode）** — 按预定义顺序返回响应：
 ```go
-type MockProvider struct {
-    script    ResponseScript
-    callCount int
-}
-
-type ResponseScript struct {
-    Responses []ScriptedResponse
-}
-
-type ScriptedResponse struct {
-    Content string
-    Error   error  // nil 表示正常响应，非 nil 表示模拟 LLM 失败
-}
+mock := llm.NewMockProvider(script)
 ```
 
 **模式二：函数模式（Function Mode）** — 根据输入 messages 动态决定响应，用于验证反馈闭环：
-
 ```go
-// MockFunc 接收 messages 并返回响应
-// 可用于验证 Observation 是否确实进入了下一轮 Context
-type MockFunc func(messages []Message) (Response, error)
-
-type MockProviderFunc struct {
-    fn MockFunc
-}
+mock := llm.NewMockProvider(nil)
+mock.SetHandler(func(messages []llm.Message) (llm.Response, error) {
+    // 根据 messages 内容动态决定响应
+})
 ```
 
-**为什么需要函数模式**：仅靠序列模式无法证明"不同 Observation → 不同 Action"，因为 MockProvider 可以简单地按顺序返回固定响应，而不检查输入。函数模式允许测试断言 Observation 确实影响了下一轮 Context 的内容。详细说明见 §9.3 机制演示②。
+函数模式是 Demo 2（Governance Interception）和 Demo 3（Feedback Loop）的测试基础。
+
+**为什么需要函数模式**：仅靠序列模式无法证明"不同 Observation → 不同 Action"，因为 MockProvider 可以简单地按顺序返回固定响应，而不检查输入。函数模式允许测试断言 Observation 确实影响了下一轮 Context 的内容。
 
 ### 3.3 工具系统（`internal/tools/`）
 
-**MVP 5 个工具**：
+**MVP 4 个工具**：
 
 | 工具 | 功能描述 | 参数 | 返回值 | 危险等级 |
 |------|---------|------|--------|:-------:|
-| `read_file` | 读取文件内容 | `path: string` | `{content: string}` | Safe |
-| `write_file` | 写入/创建文件 | `path: string, content: string` | `{bytes_written: int}` | Suspicious |
-| `list_files` | 列出目录内容 | `path: string` | `{files: string[]}` | Safe |
-| `execute_shell` | 执行 shell 命令 | `command: string, cwd?: string` | `{stdout: string, stderr: string, exit_code: int}` | Dangerous |
-| `run_tests` | 执行测试套件 | `pattern?: string, path?: string` | `{pass: bool, failures: TestFailure[], output: string}` | Suspicious |
+| `shell` | 执行 shell 命令 | `command: string` | `{stdout, stderr, exit_code}` | Dangerous |
+| `file_read` | 读取文件内容 | `path: string` | `{content: string}` | Safe |
+| `file_write` | 写入/创建文件 | `path: string, content: string` | `{bytes_written: int}` | Suspicious |
+| `git` | Git 命令（白名单） | `command: string` | `{output: string}` | Suspicious |
 
-**Tool Registry 架构**：
+**Tool 接口**：
 
 ```go
 type Tool interface {
     Name() string
     Description() string
-    Parameters() []ParamSchema
-    Execute(ctx context.Context, auth GovernanceAuth, action Action) (ToolResult, error)
-    // Execute 只接受 Governance 颁发的授权，不接受裸调用
+    Execute(action protocol.Action) (ToolResult, error)
+    Validate(action protocol.Action) error
 }
-
-type ToolRegistry struct {
-    tools map[string]Tool
-}
-
-func (r *ToolRegistry) Validate(action Action) error
-    // 校验：工具是否存在、参数是否符合 schema
-func (r *ToolRegistry) ExecuteApproved(ctx context.Context, action Action, auth GovernanceAuth) (ToolResult, error)
-    // 执行：校验 auth + 校验 action hash + 校验过期 → 调用 tool.Execute
 ```
 
-**架构不变量**：`Agent NEVER directly invokes Tool.Execute()`。所有工具执行必须经过 Governance 评估与授权。
+**Tool Registry 架构**：
+
+```go
+type Registry struct { /* 内部 map[string]Tool */ }
+
+func NewRegistry() *Registry
+func (r *Registry) Register(t Tool) error   // 工具注册
+func (r *Registry) Get(name string) (Tool, bool)  // 按名查找
+func (r *Registry) List() []Tool            // 列出全部工具
+```
+
+**架构不变量**：`Agent NEVER directly invokes Tool.Execute()`。所有工具执行必须经过 Governance 评估与授权。AgentLoop 通过 `tool.Validate(action)` → `governance.Evaluate(action)` → `tool.Execute(action)` 的流程执行工具。
+
+**Git 工具安全设计**：GitTool 使用命令白名单（`status/diff/log/branch/add/commit`），任何不在白名单中的命令直接拒绝，且参数不做 shell 拼接。
+
+**Shell 工具安全设计**：ShellTool 使用 `context.WithTimeout` 强制执行 30 秒超时，防止无限运行的命令。
 
 ### 3.4 治理系统（`internal/governance/`）★ 深入维度
 
-**评估管线**（顺序不可变）：
+**评估管线**（5 层，顺序不可变，短路上报）：
 
 ```
 Action
    ↓
-1. Schema Validation    —— Action 结构是否合法、参数是否完整
+1. Schema Validation    —— SchemaValidator：Action 结构是否合法、参数是否完整
+   ↓  失败 → DecisionDeny，管线终止
+2. Risk Classification —— RiskClassifier：Low / Medium / High / Critical
+   ↓  Critical → DecisionDeny，管线终止
+3. Policy Engine       —— PolicyEngine：规则匹配（SHELL-001、FILE-001 等）
+   ↓  规则匹配失败 → DecisionDeny，管线终止
+4. Execution Boundary  —— ExecutionBoundary：路径沙箱、资源限制
+   ↓  越界 → DecisionDeny，管线终止
+5. Execution Control   —— ExecutionController：执行超时、并发控制
+   ↓  ShouldEscalate → DecisionEscalate
    ↓
-2. Risk Classification —— Safe / Suspicious / Dangerous
-   ↓
-3. Policy Engine       —— 规则匹配（命令/路径/Git/文件规则）
-   ↓
-4. Execution Boundary  —— 路径边界、环境白名单、网络策略
-   ↓
-5. Execution Control   —— 策略检查：该 Action 允许的超时/取消策略是否有效
-                         执行时强制：Tool.Execute() 使用 context.WithTimeout() 强制执行
-   ↓
-6. Decision
+Decision
    ├── Allow
-   ├── Reject
-   └── RequireApproval
-   ↓
-7. HITL State Machine  —— Pending → Approved / Rejected / MoreInfo
-   ↓
-8. Audit Log           —— 记录完整决策链路
+   ├── Deny
+   ├── RequireApproval (RiskLevel ≥ High)
+   └── Escalate
 ```
 
-**Tool 的 base danger level 与 effective risk**：
+**关键特性：短路上报**。Pipeline 在第一个失败阶段即返回，非全部 5 阶段都执行。PipelineResult.Stages 只包含已执行的阶段。这确保了审计日志中能清晰看到"在哪个阶段被拦截"。
 
-Tool 的 `DangerLevel` 是其 base risk（默认分类），但最终的 EffectiveRisk 由 Governance 根据完整的 Action（tool + params）综合计算：
+**Risk 四级分类**：
+
+| RiskLevel | 含义 | 默认决策 |
+|-----------|------|---------|
+| `RiskLevelLow` | 安全操作 | Allow |
+| `RiskLevelMedium` | 可疑操作 | Allow（策略引擎可覆盖） |
+| `RiskLevelHigh` | 高风险操作 | RequireApproval（HITL） |
+| `RiskLevelCritical` | 极度危险 | Deny |
+
+**Tool 的 base risk 与 effective risk**：
 
 | Tool | Base Risk | 示例 Action | EffectiveRisk | 说明 |
 |------|:---------:|-------------|:------------:|------|
-| `execute_shell` | Dangerous | `go test ./...` | Suspicious | Policy Engine 根据命令内容降级 |
-| `execute_shell` | Dangerous | `git reset --hard` | Dangerous → RequireApproval | 匹配 GIT-002 规则 |
-| `execute_shell` | Dangerous | `rm -rf /` | Reject | 匹配 SHELL-001 规则 |
-| `write_file` | Suspicious | `write_file ~/.ssh/id_rsa` | Dangerous | 路径超出 workspace root |
-| `run_tests` | Suspicious | `run_tests ./...` | Allow | 常规测试运行 |
+| `shell` | High | `go test ./...` | Medium | Policy Engine 根据命令内容降级 |
+| `shell` | High | `git reset --hard` | High → RequireApproval | 匹配 GIT-002 规则 |
+| `shell` | High | `rm -rf /` | Critical → Deny | 匹配 SHELL-001 规则 |
+| `file_write` | Medium | `file_write ~/.ssh/id_rsa` | Critical | 路径超出 workspace root |
+| `git` | Medium | `git status` | Low | 安全只读命令 |
 
-**规则**：Tool 的 base DangerLevel 提供默认值；Policy Engine 可根据 Action 内容覆盖或细化风险等级。这保证了 `execute_shell` 作为能力分类是 Dangerous，但 `go test ./...` 不会不必要地触发 HITL。
+**规则表**：
 
 | 规则 ID | 类别 | 匹配模式 | 触发决策 |
 |---------|------|---------|---------|
 | GIT-001 | Git | `git push --force` | RequireApproval |
 | GIT-002 | Git | `git reset --hard` | RequireApproval |
 | GIT-003 | Git | `git clean -f[d]` | RequireApproval |
-| SHELL-001 | Shell | `rm -rf /` 或 `rm -rf ~` | Reject |
+| SHELL-001 | Shell | `rm -rf /` 或 `rm -rf ~` | Deny |
 | SHELL-002 | Shell | `chmod 777` 或 `chmod -R 777` | RequireApproval |
-| FILE-001 | File | 写入 `.git/` 目录内文件 | Suspicious |
-| NET-001 | Network | `curl`、`wget`、`nc` 等外发命令 | Suspicious |
-| PATH-001 | Path | 文件操作路径超出 workspace root | Reject |
+| FILE-001 | File | 写入 `.git/` 目录内文件 | Deny |
+| NET-001 | Network | `curl`、`wget`、`nc` 等外发命令 | RequireApproval |
+| PATH-001 | Path | 文件操作路径超出 workspace root | Deny |
 
-**HITL 状态机**：
-
-```
-                      ┌───────────┐
-                      │  Pending  │
-                      └─────┬─────┘
-                  ┌─────────┼──────────┐
-                  ▼         ▼          ▼
-            ┌─────────┐ ┌─────────┐ ┌───────────┐
-            │Approved │ │Rejected │ │ MoreInfo  │
-            └────┬────┘ └────┬────┘ └─────┬─────┘
-                 │           │            │
-                 ▼           ▼            ▼
-           ┌──────────┐ ┌────────┐ ┌──────────────┐
-           │Executing │ │Agent   │ │Re-enter Gov  │
-           └────┬─────┘ │Stop    │ │(携带原始     │
-                │       └────────┘ │Action +      │
-                ▼                 │humanFeedback)│
-           ┌──────────┐           └──────────────┘
-           │  Done    │
-           │ / Failed │
-           └──────────┘
-```
-
-**关键约束**：
-- Rejected 后同一 Action 不可绕过审批再次提交
-- MoreInfo 携带 `originalAction + humanFeedback` 重新进入 Governance 评估管线
-- Timeout 默认 5 分钟，可配置；超时自动拒绝（HITL decision = rejected，Agent final status = Failed）
-
-**GovernanceAuth**：
+**GovernanceAuth — HITL 审批绑定**：
 
 ```go
 type GovernanceAuth struct {
     DecisionID string    // 决策唯一 ID (UUID)
-    ActionHash string    // SHA256(canonicalJSON(action)) — 绑定到具体 Action
-    ExpiresAt  time.Time // 授权过期时间（默认 30 秒）
+    ActionHash string    // 基于 canonical 表示的确定性 hash
+    ActionID   string    // 绑定到具体 Action
+    ExpiresAt  time.Time // 授权过期时间（默认 300 秒，可配置）
 }
 ```
 
-**ActionHash 计算规范**：基于规范化后的 Action 表示计算，保证字段顺序等序列化差异不会导致同一 Action 得到不同 hash。禁止直接使用 `json.Marshal(map[string]any)`（map key 顺序不确定）。使用 `canonicalJSON` 序列化，保证 key 按字典序排序，字段值递归规范化。
+**ActionHash 计算**：使用 `ComputeActionHash()` 函数，基于 Action 的 Type + Payload（key 排序后拼接）计算 FNV-1a 风格 hash。保证同一 Action 的确定性和不同 Action 的区分性。
 
-**审计日志**：
+**审计日志**（Pipeline 内存存储，通过 `Pipeline.AuditLog()` 获取）：
 
 ```json
 {
-  "timestamp": "2026-08-13T14:32:01+08:00",
-  "action": "execute_shell",
-  "params": {
-    "command": "git reset --hard HEAD~1"
-  },
-  "risk": "dangerous",
-  "decision": "require_approval",
-  "matched_rules": ["GIT-002"],
-  "reasons": [
-    "git reset --hard is irreversible",
-    "operation modifies project commit history"
-  ],
-  "human_decision": "rejected",
-  "human_reason": "current branch has unpushed commits"
+  "id": "aud-1723631521000000000",
+  "timestamp": "2026-08-14T14:32:01+08:00",
+  "action_id": "act-1723631521000000000",
+  "decision": "deny",
+  "actor": "governance-pipeline",
+  "details": {
+    "schema": {"passed": true, "reason": "action structure valid"},
+    "risk": {"passed": false, "reason": "critical risk: rm -rf /"}
+  }
 }
 ```
 
-**敏感信息脱敏**：写入审计日志前，对 `params` 中的敏感字段（`token`、`password`、`api_key`、`authorization`、`secret` 等）执行 `redactSensitiveFields()` 替换为 `"***REDACTED***"`。凭据绝不进入日志。
+**敏感信息脱敏**：`AuditLogEntry.RedactSensitive()` 方法对 Details 中的 `api_key`、`token`、`secret`、`password`、`credential` 等字段自动替换为 `"[REDACTED]"`。凭据绝不进入日志。
 
 ### 3.5 反馈系统（`internal/feedback/`）
 
 | 功能 | 描述 | 输入 | 输出 |
 |------|------|------|------|
-| TestParser | 解析 `go test -json` 输出 | `go test -json` 的 stdout | `Observation{Success, Source:"go_test", ErrorType, Details}` |
-| ShellParser | 解析 shell 执行结果 | `{stdout, stderr, exit_code}` | `Observation{Success, Source:"shell", ErrorType, Details}` |
-| Observation 统一类型 | 结构化反馈载体 | — | 见下方定义 |
+| FeedbackProcessor | 统一入口，根据工具类型分发解析 | `toolType: string, result: ToolResult` | `FeedbackObservation` |
+| ParseShellResult | 解析 shell 命令执行结果 | `stdout, stderr, success` | `FeedbackObservation` |
+| ParseTestOutput | 解析 `go test -json` 输出 | `stdout, stderr, success` | `FeedbackObservation`（含 TestFailureDetail 列表） |
 
 ```go
-type Observation struct {
-    Success   bool
-    Source    string      // "go_test" | "shell" | "go_build" (deferred) | "lint" (deferred)
-    ErrorType string      // "" (成功时) | "test_failure" | "build_error" | "shell_error"
-    Details   interface{} // 结构化的具体信息
+type FeedbackObservation struct {
+    // 非导出字段，通过方法访问
+    success  bool
+    source   string              // "shell" | "go_test" | <tool_type>
+    output   string
+    errorMsg string
+    failures []TestFailureDetail
 }
 ```
 
+关键方法：
+- `IsSuccess() bool` / `IsError() bool`
+- `Source() string` / `Summary() string`
+- `FormatForLLM() string` — 唯一面向 LLM 的输出格式
+- `ToObservation() agent.Observation` — 转换为 agent 状态跟踪类型
+
+**设计原则**：非导出字段 + 方法访问确保 LLM 上下文只能通过 `FormatForLLM()` 获取格式化后的内容，而非原始 JSON。
+
 ### 3.6 记忆系统（`internal/memory/`）
 
-| 功能 | 描述 | 输入 | 输出 |
-|------|------|------|------|
-| 写入 (`Store`) | 持久化记忆条目 | `{Type, Tags, Content}` | `{ID, CreatedAt}` |
-| 检索 (`Retrieve`) | 根据任务上下文匹配相关记忆 | `taskContext: string` | `[]MemoryEntry`（仅匹配的条目） |
-| 列表 (`List`) | 列出所有记忆条目 | 无 | `[]MemoryEntrySummary`（摘要信息） |
+| 功能 | 描述 | 实现 |
+|------|------|------|
+| 写入 (`FileStore.Save`) | 持久化记忆条目到 JSON 文件 | `MemoryEntry{ID, Type, Tags, Content, CreatedAt, AccessedAt}` |
+| 检索 (`Retriever.Retrieve`) | 根据任务上下文关键词匹配相关记忆 | 全查询命中 10 分、标签命中 8 分、单词命中 2-3 分；MinScore=3 阈值过滤 |
+| 列表 (`FileStore.List`) | 列出所有记忆条目 | 从 JSON 文件反序列化全部条目 |
+| 删除 (`FileStore.Delete`) | 删除指定记忆条目 | 按 ID 删除并重写 JSON 文件 |
 
 **记忆条目结构**：
 
@@ -406,86 +397,79 @@ type MemoryEntry struct {
 }
 ```
 
-**检索算法**（MVP，关键词/标签匹配）：将任务描述分词，与记忆条目的 `tags` 和 `Content` 进行子串匹配。匹配分数高于阈值的条目返回。不投入向量检索。
+**检索算法**（MVP，关键词评分）：
+- 将任务描述分词，与记忆条目的 `tags` 和 `Content` 进行匹配
+- 全查询字符串匹配：10 分
+- 标签匹配：每个 8 分
+- 内容单词匹配：每个 2 分（短词）或 3 分（长词 ≥5 字符）
+- **MinScore=3 阈值**：过滤单内容词匹配（2 分），确保至少一个标签词或两个内容词匹配
 
 **按需注入数据流**：
 
 ```
-Memory Store (JSON file)
+AgentLoop.SetMemory(store)
       ↓
-Retriever.Retrieve(taskContext)
+Run() → buildSystemPrompt(task)
       ↓
-Matching MemoryEntries only
+Retriever.Retrieve(task, topK=3)
       ↓
-Agent Loop → Context Assembly → 注入匹配的记忆
+匹配的 MemoryEntry（score ≥ MinScore）
+      ↓
+追加到 System Prompt 末尾：
+"Relevant context from memory:\n- {content}\n- {content}"
       ↓
 不匹配的记忆不被加载
 ```
 
-### 3.7 CLI 入口（`cmd/harness/`）
+**架构边界**：Memory 仅影响 System Prompt，不参与 Governance 决策。确保"记忆不能绕过治理"。
 
-| 命令 | 功能 | 参数 | 说明 |
-|------|------|------|------|
-| `harness run` | 运行编码任务 | `--task`, `--max-iterations`, `--run-timeout` | 启动 Agent Loop，终端输出完整生命周期 |
-| `harness serve` | 启动 WebUI 服务 | `--port` | 启动 HTTP 服务，提供 WebUI |
-| `harness init` | 初始化项目 | 无 | 引导用户创建配置文件、录入 API key |
-| `harness memory add` | 添加记忆条目 | `--type`, `--tags`, `--content` | 写入 Memory Store |
-| `harness memory list` | 列出记忆条目 | 无 | 显示所有记忆摘要 |
+### 3.7 CLI 入口（`internal/cli/` + `cmd/harness/`）
 
-### 3.8 WebUI
+CLI 是 runtime 的薄封装——仅导入 `runtime` 包，不导入任何 domain 包。
+
+| 命令 | 功能 | 说明 |
+|------|------|------|
+| `harness run <task>` | 同步执行任务 | 启动 AgentLoop，阻塞等待完成 |
+| `harness submit <task>` | 异步提交任务 | 通过 TaskManager 提交，返回 task_id |
+| `harness status <id>` | 查询任务状态 | 通过 TaskManager.Get 查询 |
+| `harness list` | 列出所有任务 | 通过 TaskManager.List 查询 |
+| `harness cancel <id>` | 取消任务 | 通过 TaskManager.Cancel 取消 |
+
+**架构约束**：CLI 仅导入 runtime 包，不导入 agent/governance/tools/llm/memory/feedback。这是"CLI 是 runtime client，不是第二套 runtime"的架构约束。
+
+### 3.8 WebUI（`internal/web/`）
 
 **异步执行模型**：
 
 ```
-HTTP Request POST /api/run
+HTTP Request POST /tasks
       ↓
 Task Manager (internal/runtime/)
-      ├── 创建 TaskRecord
-      ├── 启动 goroutine → Agent.Run()
-      └── 立即返回 {run_id}
+      ├── 创建 Task (Pending)
+      ├── 启动 goroutine → AgentLoop.Run()
+      └── 立即返回 202 Accepted {task_id}
       ↓
-HTTP Request GET /api/run/:id
+HTTP Request GET /tasks/{id}
       ↓
-Task Manager 查询 TaskRecord 状态
+Task Manager 查询 Task 状态
       ↓
-返回状态快照 {status, iteration, ...}
+返回状态快照 {status, result, ...}
 ```
 
-Agent 在独立 goroutine 中异步执行，不阻塞 HTTP 请求。HITL 等待期间，HTTP 连接不会挂起。
+Agent 在独立 goroutine 中异步执行，不阻塞 HTTP 请求。HTTP 连接断开不影响 AgentLoop 执行。
 
 **API 端点**：
 
 | 端点 | 方法 | 请求体 | 响应体 | 说明 |
 |------|------|--------|--------|------|
-| `POST /api/run` | Create | `{"task": "..."}` | `{"run_id": "..."}` | 创建新任务，返回 run_id |
-| `GET /api/run/:id` | Read | — | 完整状态快照（见下方） | 轮询 Agent 状态 |
-| `POST /api/approval/:id` | Approve | `{"decision": "approve"\|"reject"\|"more_info", "reason": "..."}` | `{"status": "ok"}` | 提交审批决定 |
+| `POST /tasks` | Submit | `{"task": "..."}` | `202 {"task_id": "..."}` | 创建异步任务 |
+| `GET /tasks/{id}` | Status | — | `200 {"id", "task", "status", "result", ...}` | 查询任务状态 |
+| `GET /tasks` | List | — | `200 [{...}, ...]` | 列出所有任务 |
+| `DELETE /tasks/{id}` | Cancel | — | `200 {"status": "cancelled"}` | 取消任务 |
 
-**`GET /api/run/:id` 响应体**：
+**Context 生命周期分离**：HTTP context（`r.Context()`）仅用于读取请求体。任务 context（`context.Background()`）独立管理，浏览器断开不取消 AgentLoop。
 
-```json
-{
-  "status": "running",
-  "iteration": 3,
-  "current_action": {
-    "tool": "execute_shell",
-    "params": {...}
-  },
-  "observations": [],
-  "governance": {
-    "risk": "dangerous",
-    "decision": "require_approval",
-    "matched_rules": ["GIT-002"],
-    "reasons": ["..."],
-    "waiting_approval": true
-  },
-  "audit": [
-    {"timestamp": "...", "action": "...", "decision": "..."}
-  ]
-}
-```
-
-**前端技术**：HTML + CSS + Vanilla JS，通过 `go:embed` 嵌入二进制，不依赖外部前端框架。HTTP 轮询（~1s 间隔），不使用 WebSocket。
+**前端技术**：HTML + CSS + Vanilla JS，通过 `go:embed` 嵌入二进制，不依赖外部前端框架（待实现）。
 
 ---
 
@@ -557,54 +541,73 @@ Restricted Workspace/
 │                                                                  │
 │   ┌──────────────┐              ┌──────────────────────────┐     │
 │   │     CLI      │              │          WebUI           │     │
-│   │ harness run  │              │ harness serve            │     │
-│   │ harness init │              │ Observability + HITL     │     │
+│   │ (internal/   │              │ (internal/web/)          │     │
+│   │  cli/)       │              │                          │     │
+│   │ harness run  │              │ POST /tasks              │     │
+│   │ harness      │              │ GET  /tasks/{id}         │     │
+│   │   submit/    │              │ DELETE /tasks/{id}       │     │
+│   │   status/    │              │                          │     │
+│   │   list/cancel│              │                          │     │
 │   └──────┬───────┘              └───────────┬──────────────┘     │
 │          │                                  │                    │
-└──────────┼──────────────────────────────────┼────────────────────┘
-           │                                  │
-           └──────────────┬───────────────────┘
+│          │  仅导入 runtime 包                │  仅导入 runtime 包  │
+│          └──────────────┬───────────────────┘                    │
+└─────────────────────────┼────────────────────────────────────────┘
                           ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│                         Harness Core                             │
+│                         Runtime Layer                            │
 │                                                                  │
 │  ┌────────────────────────────────────────────────────────────┐  │
-│  │                        Agent Loop                          │  │
+│  │              internal/runtime/ (Composition Root)           │  │
 │  │                                                             │  │
-│  │  State → Context Assembly → LLM → Action Parser →           │  │
-│  │       Governance → Tool Dispatch → Observation →           │  │
-│  │       State Update → Stop Condition Check                   │  │
-│  │                                                             │  │
-│  │  架构不变量                                                  │  │
-│  │  (1) Agent NEVER directly invokes Tool.Execute()            │  │
-│  │  (2) Approval is bound to the exact Action being approved   │  │
-│  │  (3) Every Governance decision is recorded in Audit Log     │  │
-│  └────────────────────────────────────────────────────────────┘  │
-│              │           │            │            │              │
-│              ▼           ▼            ▼            ▼              │
-│  ┌───────────┐  ┌───────────┐  ┌────────────┐  ┌───────────┐    │
-│  │    LLM    │  │   Tools   │  │Governance ★│  │ Feedback  │    │
-│  │  Real +   │  │ Registry  │  │            │  │           │    │
-│  │   Mock    │  │           │  │┌──────────┐│  │ TestParser│    │
-│  └───────────┘  │ Validate()│  ││Risk      ││  │ShellParser│    │
-│                 │Execute    │  ││Policy    ││  │           │    │
-│                 │ Approved()│  ││Exec Bndry││  │      →    │    │
-│                 └───────────┘  ││Exec Ctrl ││  │Observation│    │
-│                                ││HITL      ││  └───────────┘    │
-│              ┌───────────┐    ││Audit Log ││        │          │
-│              │  Memory   │    │└──────────┘│        │          │
-│              │Store+     │    └────────────┘        │          │
-│              │Retrieve   │                          │          │
-│              └─────┬─────┘                          │          │
-│                    │                                │          │
-│              ┌─────▼──────┐            ┌───────────▼──────────┐  │
-│              │   Config   │            │     Credential       │  │
-│              │ YAML Load  │            │  Secure Store (主)   │  │
-│              └────────────┘            │  .env (兼容输入源)   │  │
-│                                        └──────────────────────┘  │
+│  │  ┌─────────────────┐    ┌──────────────────┐               │  │
+│  │  │   AgentLoop     │    │   TaskManager    │               │  │
+│  │  │                 │    │                  │               │  │
+│  │  │ Think → Decide  │    │ Submit/Get/Cancel│               │  │
+│  │  │   → Act →       │    │ /List/Wait       │               │  │
+│  │  │   Observe       │    │ (goroutine 管理) │               │  │
+│  │  └────────┬────────┘    └────────┬─────────┘               │  │
+│  │           │                      │                          │  │
+│  └───────────┼──────────────────────┼──────────────────────────┘  │
+│              │ imports              │ imports                     │
+│              ▼                      ▼                             │
+│  ┌───────────────────────────────────────────────────────────┐   │
+│  │                  Domain Layer (星型拓扑)                    │   │
+│  │                                                             │   │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐   │   │
+│  │  │  agent/  │  │   llm/   │  │  tools/  │  │governance│   │   │
+│  │  │ 状态机   │  │ Provider │  │ Registry │  │  ★ 五层  │   │   │
+│  │  │ 7 状态   │  │ Message  │  │ 4 工具   │  │  管线    │   │   │
+│  │  └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘   │   │
+│  │       │             │             │             │          │   │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────────────────┐     │   │
+│  │  │ feedback │  │  memory  │  │      protocol/       │     │   │
+│  │  │ 反馈解析 │  │ 文件存储 │  │  ★ 共享类型定义      │     │   │
+│  │  │          │  │ 关键词   │  │  Action, ToolResult  │     │   │
+│  │  │          │  │ 检索     │  │  ActionStatus        │     │   │
+│  │  └──────────┘  └──────────┘  └──────────────────────┘     │   │
+│  │                                                             │   │
+│  │  所有 domain 包只依赖 protocol + 标准库，互不依赖            │   │
+│  └───────────────────────────────────────────────────────────┘   │
+│                                                                  │
+│  ┌──────────┐  ┌──────────┐                                     │
+│  │ config/  │  │credential│  (空包，接口已定义，待实现)           │
+│  └──────────┘  └──────────┘                                     │
 │                                                                  │
 └──────────────────────────────────────────────────────────────────┘
 ```
+
+**架构原则**：
+
+1. **protocol 包是唯一的共享依赖**：所有 domain 包（agent/governance/tools/llm/feedback/memory）通过 `protocol` 共享类型（Action, ToolResult, ActionStatus），domain 包之间互不依赖
+2. **runtime 是 composition root**：AgentLoop 和 TaskManager 在 runtime 包中导入所有 domain 包，在运行时组装。CLI 和 WebUI 仅导入 runtime 包，不直接访问任何 domain 包
+3. **星型拓扑**：`protocol ← agent/governance/tools/feedback/llm/memory`，`runtime → 所有 domain 包`，`cli/web → runtime`
+
+**架构不变量**：
+1. Agent NEVER directly invokes Tool.Execute() — 所有工具执行必须经过 Governance 评估
+2. Approval is bound to the exact Action being approved — GovernanceAuth 包含 ActionHash
+3. Every Governance decision is recorded in Audit Log — Pipeline.recordAudit()
+4. CLI/WebUI 不导入 agent/governance/tools/llm/memory/feedback 等 domain 包
 
 ### 5.2 领域与机制设计
 
@@ -654,194 +657,351 @@ Restricted Workspace/
 ```
 User Input Task
       ↓
-Agent Loop (State Initialization)
+AgentLoop.Run(ctx, task)
       ↓
-Context Assembly (System Prompt + Messages + Memory + LastObservation)
+buildSystemPrompt(task) — 注入相关记忆（Memory Retriever）
       ↓
-LLM Call (Chat → Response)
+Messages: [system(+memory), user(task)]
       ↓
-Action Parser (Response → Action)
+┌─ Agent Loop 迭代 ─────────────────────────────────────┐
+│                                                        │
+│  Think: llm.Generate(ctx, messages)                    │
+│         → Response (FinishReasonStop | ToolCalls)      │
+│         → 追加 assistant message 到 messages           │
+│                                                        │
+│  Decide: governance.Pipeline.Evaluate(action)          │
+│         ├── Allow          → 继续执行                   │
+│         ├── Deny           → 追加错误 tool message      │
+│         ├── RequireApproval → HITL 回调                 │
+│         └── Escalate       → 追加错误 tool message      │
+│                                                        │
+│  Act: tool.Validate(action) → tool.Execute(action)     │
+│       → ToolResult (Success | Error)                   │
+│                                                        │
+│  Observe: feedback.Process(toolName, result)            │
+│          → FeedbackObservation.FormatForLLM()           │
+│          → 追加 tool message 到 messages               │
+│                                                        │
+│  iterations++                                          │
+│  if iterations >= MaxIterations → Error                │
+│  if FinishReasonStop → Terminated → return result      │
+│                                                        │
+└────────────────────────────────────────────────────────┘
       ↓
-Governance Pipeline
-  ├── Allow          → ToolRegistry.ExecuteApproved()
-  ├── Reject         → AgentState update (StopCondition = HumanRejected)
-  └── RequireApproval → HITL Pending → Human Decision → ExecuteApproved | Reject
+最终状态: AgentStateTerminated | AgentStateError
       ↓
-Tool Execution → ToolResult
-      ↓
-Feedback Parser → Observation
-      ↓
-Agent State Update (Iteration++, LastObservation = Observation)
-      ↓
-Stop Condition Check
-  ├── No  → 下一轮迭代 (Context Assembly)
-  └── Yes → 返回最终 Status
+返回 (result string, error)
 ```
 
 ### 5.4 模块依赖关系
 
 ```
-agent
-  ├── llm        (调用 Chat)
-  ├── tools      (调用 ToolRegistry.ExecuteApproved)
-  ├── governance (调用 Evaluate, ExecuteApproved 时传递 auth)
-  ├── feedback   (解析工具结果)
-  ├── memory     (Context Assembly 时调用 Retrieve)
-  └── config     (读取配置)
-
-cli
-  └── agent      (启动 Agent.Run)
-  └── credential (引导 key 录入)
-  └── memory     (memory add/list 命令)
-
-web
-  └── agent      (启动 Agent.Run, 查询状态)
-  └── governance (HITL 审批)
-
-credential
-  └── config     (读取 Secure Store 配置)
-
-config
-  └── (无依赖，纯文件加载)
+protocol/          ← 共享类型定义（Action, ToolResult, ActionStatus）
+    ↑
+    │ 所有 domain 包只依赖 protocol + 标准库
+    │
+┌───┴──────────────┬──────────────┬──────────────┬──────────────┐
+│                  │              │              │              │
+agent/          llm/           tools/        governance/    feedback/
+│               │              │              │              │
+│ 状态机        │ Provider     │ Registry     │ Pipeline     │ Parser
+│ 7 状态        │ Message      │ Tool 接口    │ 5 层管线     │ Observation
+│ Action 别名   │ MockProvider │              │ Audit        │
+│               │              │              │              │
+└───┬───────────┴──────┬───────┴──────┬───────┴──────┬───────┘
+    │                  │              │              │
+    │            memory/              │              │
+    │            文件存储+检索         │              │
+    │                                  │              │
+    └──────────────────┬───────────────┴──────────────┘
+                       │
+                       │ runtime 导入所有 domain 包
+                       ▼
+               runtime/ (Composition Root)
+               ├── AgentLoop (主循环)
+               └── TaskManager (异步任务)
+                       │
+                       │ 仅导入 runtime 包
+                       │
+            ┌──────────┴──────────┐
+            │                     │
+        cli/ (internal/cli/)   web/ (internal/web/)
+        CLI 薄封装             HTTP 服务
+            │                     │
+            └──────────┬──────────┘
+                       ▼
+               cmd/harness/main.go
 ```
+
+**关键依赖规则**：
+- `protocol/` 无内部依赖（仅标准库）
+- Domain 包（agent/governance/tools/llm/feedback/memory）只依赖 `protocol/` + 标准库，互不依赖
+- `runtime/` 导入所有 domain 包 + `protocol/`，是唯一的 composition root
+- `cli/` 和 `web/` 仅导入 `runtime/`，不导入任何 domain 包
+- `cmd/harness/` 仅导入 `cli/`、`web/`、`runtime/`
 
 ---
 
 ## 6. 数据模型
 
-### 6.1 AgentState
+> 以下类型定义与 `internal/` 下的实际 Go 代码一致。所有 domain 包通过 `protocol` 包共享核心类型。
+
+### 6.1 AgentState（`internal/agent/state.go`）
+
+7 状态 int 枚举 + 合法转换表 + TransitionTo 验证：
 
 ```go
-type AgentStatus string
-const (
-    StatusIdle            AgentStatus = "idle"
-    StatusRunning         AgentStatus = "running"
-    StatusWaitingApproval AgentStatus = "waiting_approval"
-    StatusDone            AgentStatus = "done"
-    StatusFailed          AgentStatus = "failed"
-    StatusRejected        AgentStatus = "rejected"
-)
+type AgentState int
 
-type StopCondition string
 const (
-    StopCompleted          StopCondition = "completed"
-    StopMaxIterations      StopCondition = "max_iterations"
-    StopUnrecoverableError StopCondition = "unrecoverable_error"
-    StopHumanRejected      StopCondition = "human_rejected"
-    StopTimeout            StopCondition = "timeout"
+    AgentStateIdle             AgentState = iota // 初始状态
+    AgentStateThinking                           // LLM 生成响应
+    AgentStateAwaitingApproval                   // 等待 HITL 审批
+    AgentStateExecuting                          // 执行工具
+    AgentStateObserving                          // 处理工具结果
+    AgentStateError                              // 不可恢复错误
+    AgentStateTerminated                         // 循环终止
 )
-
-type AgentState struct {
-    Goal            string
-    Iteration       int
-    Messages        []Message
-    PendingAction   *Action
-    LastObservation *Observation
-    Status          AgentStatus
-    StopCondition   StopCondition
-}
 ```
 
-### 6.2 StopCondition → Status 映射
+**合法状态转换**（通过 `transitionTable` map 约束）：
 
-| StopCondition | Final Status |
-|--------------|-------------|
-| `Completed` | `Done` |
-| `MaxIterations` | `Failed` |
-| `UnrecoverableError` | `Failed` |
-| `HumanRejected` | `Rejected` |
-| `Timeout` | `Failed` |
-
-### 6.3 Message
-
-```go
-type Message struct {
-    Role    string // "system" | "user" | "assistant"
-    Content string
-}
+```
+Idle → Thinking
+Thinking → Executing | AwaitingApproval | Error | Terminated
+AwaitingApproval → Executing | Error | Terminated
+Executing → Observing | Error | Terminated
+Observing → Thinking | Error | Terminated
+Error → Terminated
+Terminated → (无)
 ```
 
-### 6.4 Action
+关键方法：`TransitionTo(next AgentState) (AgentState, error)` — 任何状态转换都经过同一验证逻辑。
+
+### 6.2 Action（`internal/protocol/action.go`）
 
 ```go
+type ActionStatus int
+
+const (
+    ActionStatusPending   ActionStatus = iota
+    ActionStatusRunning
+    ActionStatusCompleted
+    ActionStatusFailed
+    ActionStatusCancelled
+)
+
 type Action struct {
-    Tool   string         `json:"tool"`
-    Params map[string]any `json:"params"`
+    ID        string         `json:"id"`
+    Type      string         `json:"type"`
+    Payload   map[string]any `json:"payload,omitempty"`
+    Status    ActionStatus   `json:"status"`
+    Result    *ToolResult    `json:"result,omitempty"`
+    Error     string         `json:"error,omitempty"`
+    Timestamp time.Time      `json:"timestamp"`
 }
 ```
 
-### 6.5 GovernanceAuth
+关键方法：
+- `NewAction(actionType string, payload map[string]any) Action` — 创建 Action 并生成 ID
+- `SetStatus(newStatus ActionStatus) error` — 带转换验证的状态变更
+- `WithResult(result *ToolResult)` — 附加执行结果
 
-```go
-type GovernanceAuth struct {
-    DecisionID string    `json:"decision_id"`
-    ActionHash string    `json:"action_hash"`
-    ExpiresAt  time.Time `json:"expires_at"`
-}
-```
-
-### 6.6 GovernanceDecision
-
-```go
-type DecisionType string
-const (
-    DecisionAllow          DecisionType = "allow"
-    DecisionReject         DecisionType = "reject"
-    DecisionRequireApproval DecisionType = "require_approval"
-)
-
-type GovernanceDecision struct {
-    Decision     DecisionType
-    Risk         DangerLevel
-    Reasons      []string
-    MatchedRules []string
-    Auth         *GovernanceAuth // 非 nil 的两种情况：
-                                 // (1) Decision=Allow 时立即签发
-                                 // (2) Decision=RequireApproval 且人工审批通过后签发
-}
-```
-
-### 6.7 Observation
-
-```go
-type Observation struct {
-    Success   bool
-    Source    string      // "go_test" | "shell"
-    ErrorType string      // "" | "test_failure" | "shell_error"
-    Details   interface{} // 结构化详情
-}
-
-// TestFailure 详情
-type TestFailureDetail struct {
-    TestName string
-    Message  string
-}
-
-// ShellError 详情
-type ShellErrorDetail struct {
-    ExitCode int
-    Stderr   string
-}
-```
-
-### 6.8 ToolResult
+### 6.3 ToolResult（`internal/protocol/result.go`）
 
 ```go
 type ToolResult struct {
-    Success  bool
-    Stdout   string
-    Stderr   string
-    ExitCode int
-    Data     map[string]any // 工具特定的结构化数据
+    ActionID  string        `json:"action_id"`
+    Success   bool          `json:"success"`
+    Data      any           `json:"data,omitempty"`
+    Error     string        `json:"error,omitempty"`
+    Duration  time.Duration `json:"duration_ns"`
+    Timestamp time.Time     `json:"timestamp"`
 }
 ```
 
-### 6.9 MemoryEntry
+关键方法：
+- `NewSuccessResult(actionID string, data any, duration time.Duration) ToolResult`
+- `NewErrorResult(actionID, errMsg string, duration time.Duration) ToolResult`
+
+### 6.4 Tool 接口（`internal/tools/interface.go`）
+
+```go
+type Tool interface {
+    Name() string
+    Description() string
+    Execute(action protocol.Action) (ToolResult, error)
+    Validate(action protocol.Action) error
+}
+```
+
+**架构不变量**：Agent NEVER directly invokes Tool.Execute()。所有工具执行必须经过 Governance 评估。
+
+### 6.5 Registry（`internal/tools/interface.go`）
+
+```go
+type Registry struct {
+    // 内部 map[string]Tool
+}
+
+func NewRegistry() *Registry
+func (r *Registry) Register(t Tool) error
+func (r *Registry) Get(name string) (Tool, bool)
+func (r *Registry) List() []Tool
+```
+
+### 6.6 Message 与 LLM 类型（`internal/llm/message.go`）
+
+```go
+type Role int
+const (
+    RoleSystem    Role = iota
+    RoleUser
+    RoleAssistant
+    RoleTool
+)
+
+type FinishReason int
+const (
+    FinishReasonStop      FinishReason = iota
+    FinishReasonToolCalls
+    FinishReasonLength
+    FinishReasonError
+)
+
+type ToolCall struct {
+    ID       string           `json:"id"`
+    Type     string           `json:"type"`
+    Function ToolCallFunction `json:"function"`
+}
+
+type ToolCallFunction struct {
+    Name      string `json:"name"`
+    Arguments string `json:"arguments"`
+}
+
+type Message struct {
+    Role       Role       `json:"role"`
+    Content    string     `json:"content"`
+    ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+    ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+type Response struct {
+    Message      Message      `json:"message"`
+    FinishReason FinishReason `json:"finish_reason"`
+    Usage        Usage        `json:"usage,omitempty"`
+}
+```
+
+关键方法：
+- `NewSystemMessage(content string) Message`
+- `NewToolMessage(toolCallID, content string) Message`
+- `NewToolCallResponse(content string, toolCalls ...ToolCall) Response`
+- `Message.WithToolCall(id, name, arguments string)`
+
+### 6.7 Provider 接口（`internal/llm/provider.go`）
+
+```go
+type Provider interface {
+    Generate(ctx context.Context, messages []Message) (Response, error)
+}
+```
+
+MockProvider 支持两种模式：
+- **序列模式**：`NewMockProvider(script)` — 按预定义顺序返回响应
+- **函数模式**：`mock.SetHandler(fn)` — 根据输入 messages 动态决定响应
+
+### 6.8 Governance 类型（`internal/governance/`）
+
+```go
+// RiskLevel 四级风险分类
+type RiskLevel int
+const (
+    RiskLevelLow      RiskLevel = iota
+    RiskLevelMedium
+    RiskLevelHigh       // → RequireApproval (HITL)
+    RiskLevelCritical   // → Deny
+)
+
+// GovernanceDecision 四态决策
+type GovernanceDecision int
+const (
+    DecisionAllow           GovernanceDecision = iota
+    DecisionDeny
+    DecisionRequireApproval
+    DecisionEscalate
+)
+
+// GovernanceAuth — HITL 审批绑定
+type GovernanceAuth struct {
+    DecisionID string    `json:"decision_id"`
+    ActionHash string    `json:"action_hash"`
+    ActionID   string    `json:"action_id"`
+    ExpiresAt  time.Time `json:"expires_at"`
+}
+
+// StageResult — 单阶段评估结果
+type StageResult struct {
+    StageName      string    `json:"stage"`
+    Passed         bool      `json:"passed"`
+    Reason         string    `json:"reason,omitempty"`
+    RiskLevel      RiskLevel `json:"risk_level,omitempty"`
+    ShouldEscalate bool      `json:"should_escalate,omitempty"`
+}
+
+// PipelineResult — 聚合评估结果
+type PipelineResult struct {
+    Decision  GovernanceDecision `json:"decision"`
+    Stages    []StageResult      `json:"stages"`
+    Auth      *GovernanceAuth    `json:"auth,omitempty"`
+    ActionID  string             `json:"action_id"`
+    Timestamp time.Time          `json:"timestamp"`
+}
+```
+
+### 6.9 AuditLogEntry（`internal/governance/audit.go`）
+
+```go
+type AuditLogEntry struct {
+    ID        string            `json:"id"`
+    Timestamp time.Time         `json:"timestamp"`
+    ActionID  string            `json:"action_id"`
+    Decision  GovernanceDecision `json:"decision"`
+    Actor     string            `json:"actor"`
+    Details   map[string]any    `json:"details,omitempty"`
+}
+```
+
+敏感信息脱敏：`RedactSensitive()` 方法对 `api_key`、`token`、`secret`、`password`、`credential` 等字段自动替换为 `"[REDACTED]"`。
+
+### 6.10 FeedbackObservation（`internal/feedback/feedback.go`）
+
+```go
+type FeedbackObservation struct {
+    // 非导出字段，通过方法访问
+    success  bool
+    source   string
+    output   string
+    errorMsg string
+    failures []TestFailureDetail
+}
+```
+
+关键方法：
+- `IsSuccess() bool` / `IsError() bool`
+- `Source() string` / `Summary() string`
+- `FormatForLLM() string` — 唯一面向 LLM 的输出格式
+- `ToObservation() agent.Observation` — 转换为 agent 状态跟踪类型
+
+非导出字段 + 方法访问的设计确保 LLM 上下文只能通过 `FormatForLLM()` 获取格式化后的内容。
+
+### 6.11 MemoryEntry（`internal/memory/entry.go`）
 
 ```go
 type MemoryEntry struct {
     ID         string    `json:"id"`
-    Type       string    `json:"type"`       // "convention" | "decision" | "error_pattern"
+    Type       string    `json:"type"`
     Tags       []string  `json:"tags"`
     Content    string    `json:"content"`
     CreatedAt  time.Time `json:"created_at"`
@@ -849,69 +1009,49 @@ type MemoryEntry struct {
 }
 ```
 
-### 6.10 AuditLogEntry
+### 6.12 Task 与 TaskStatus（`internal/runtime/task.go`）
 
 ```go
-type AuditLogEntry struct {
-    Timestamp     time.Time              `json:"timestamp"`
-    Action        string                 `json:"action"`
-    Params        map[string]any         `json:"params"`
-    Risk          string                 `json:"risk"`
-    Decision      string                 `json:"decision"`
-    MatchedRules  []string               `json:"matched_rules,omitempty"`
-    Reasons       []string               `json:"reasons,omitempty"`
-    HumanDecision string                 `json:"human_decision,omitempty"`
-    HumanReason   string                 `json:"human_reason,omitempty"`
-}
-```
-
-### 6.11 Config
-
-```go
-type Config struct {
-    LLM struct {
-        Endpoint  string  `yaml:"endpoint"`
-        Model     string  `yaml:"model"`
-        MaxTokens int     `yaml:"max_tokens"`
-        Timeout   Duration `yaml:"timeout"`
-    } `yaml:"llm"`
-
-    Agent struct {
-        MaxIterations int      `yaml:"max_iterations"`
-        RunTimeout    Duration `yaml:"run_timeout"`
-    } `yaml:"agent"`
-
-    Governance struct {
-        Enabled      bool     `yaml:"enabled"`
-        HITLTimeout  Duration `yaml:"hitl_timeout"`
-        ToolTimeout  Duration `yaml:"tool_timeout"`
-        WorkspaceRoot string  `yaml:"workspace_root"`
-        Rules        []string `yaml:"rules"` // 启用/禁用的规则 ID 列表
-    } `yaml:"governance"`
-
-    Web struct {
-        Port int `yaml:"port"`
-    } `yaml:"web"`
-}
-```
-
-### 6.12 退出码常量
-
-```go
+type TaskStatus int
 const (
-    ExitCodeDone     = 0
-    ExitCodeFailed   = 1
-    ExitCodeRejected = 2
+    TaskStatusPending    TaskStatus = iota
+    TaskStatusRunning
+    TaskStatusCompleted
+    TaskStatusFailed
+    TaskStatusCancelled
 )
+
+type Task struct {
+    ID        string
+    Task      string
+    Status    TaskStatus
+    Result    string
+    Error     string
+    CreatedAt time.Time
+    UpdatedAt time.Time
+}
 ```
 
-### 6.13 持久化文件
+**TaskStatus 与 AgentState 是独立的两个维度**：TaskStatus 跟踪外部任务生命周期（5 态），AgentState 跟踪内部 Agent 决策循环（7 态）。互不合并。
+
+### 6.13 LoopConfig（`internal/runtime/loop.go`）
+
+```go
+type LoopConfig struct {
+    MaxIterations int
+    SystemPrompt  string
+    ToolTimeout   time.Duration
+    HITLTimeout   time.Duration
+}
+```
+
+### 6.14 持久化文件
 
 | 文件 | 格式 | 位置 | 用途 |
 |------|------|------|------|
-| `config.yaml` | YAML | 项目根目录或 `~/.harness/` | 用户配置 |
 | `memory.json` | JSON | 项目根目录 `.harness/memory.json` | 记忆持久化 |
-| `audit.jsonl` | JSONL | 项目根目录 `.harness/audit.jsonl` | 治理审计日志 |
+| `audit.jsonl` | JSONL | 项目根目录 `.harness/audit.jsonl` | 治理审计日志（Pipeline 内存存储） |
+| `config.yaml` | YAML | 项目根目录或 `~/.harness/` | 用户配置（待实现） |
 
 ---
 
@@ -1163,105 +1303,122 @@ docker run \
 
 | 类别 | 模块 | 路径 | 职责 |
 |------|------|------|------|
-| Core | Agent Loop | `internal/agent/` | 状态机 + 上下文组装 + 停机判断 + Action 类型 |
-| Core | LLM | `internal/llm/` | Provider 接口 + Real + Mock |
-| Core | Tools | `internal/tools/` | 5 个工具 + Registry + Validate/ExecuteApproved |
-| Core | Governance ★ | `internal/governance/` | Risk + Policy + ExecBoundary + ExecControl + HITL + AuditLog |
-| Core | Feedback | `internal/feedback/` | 2 个 Parser → Observation |
-| Core | Memory | `internal/memory/` | JSON Store + 标签检索 |
-| Core | Runtime | `internal/runtime/` | Task Manager：异步任务创建、状态跟踪、goroutine 管理 |
-| Core | Config | `internal/config/` | YAML 加载 + 校验 |
-| Core | Credential | `internal/credential/` | Secure Store + 兼容输入 |
-| Presentation | WebUI | `web/` | Thin layer：Observability + HITL |
-| Entry | CLI | `cmd/harness/` | CLI 入口 |
+| Shared | Protocol | `internal/protocol/` | 共享类型定义（Action, ToolResult, ActionStatus）— 所有 domain 包的唯一公共依赖 |
+| Core | Agent | `internal/agent/` | 7 状态 AgentState + 合法转换表 + Action 别名 + Observation 类型 |
+| Core | LLM | `internal/llm/` | Provider 接口 + Message/Response 类型 + MockProvider（序列模式+函数模式） |
+| Core | Tools | `internal/tools/` | Tool 接口 + Registry + ShellTool + FileTool + GitTool（安全白名单） |
+| Core | Governance ★ | `internal/governance/` | 五层 Pipeline（Schema→Risk→Policy→Boundary→Control）+ Audit + GovernanceAuth |
+| Core | Feedback | `internal/feedback/` | FeedbackProcessor + ParseShellResult + ParseTestOutput + FeedbackObservation |
+| Core | Memory | `internal/memory/` | FileStore（JSON 持久化）+ Retriever（关键词评分 + MinScore 阈值） |
+| Core | Runtime | `internal/runtime/` | Composition Root：AgentLoop（主循环）+ TaskManager（异步任务） |
+| Core | Config | `internal/config/` | 配置加载（接口已定义，待实现） |
+| Core | Credential | `internal/credential/` | 凭据安全存储（接口已定义，待实现） |
+| Presentation | CLI | `internal/cli/` | CLI 薄封装（Run/Submit/Status/List/Cancel），仅导入 runtime |
+| Presentation | WebUI | `internal/web/` | HTTP 服务（POST/GET/DELETE /tasks），仅导入 runtime |
+| Entry | CMD | `cmd/harness/` | CLI 入口（5 个命令） |
 
 ---
 
 ## 附录：项目目录结构
 
 > 项目根目录名：`CageHarness/`（与 GitHub 仓库名一致）
-> 以下为根目录下的完整结构：
+> 以下为根目录下的实际文件结构（与代码一致）：
 
 ```
-harness/
+CageHarness/
 ├── cmd/
 │   └── harness/
-│       └── main.go              # CLI 入口
+│       └── main.go                 # CLI 入口（5 个命令）
 ├── internal/
-│   ├── agent/                   # Agent 主循环
-│   │   ├── state.go             #   AgentState, AgentStatus, StopCondition
-│   │   ├── loop.go              #   主循环状态机
-│   │   ├── context.go           #   上下文组装
-│   │   ├── action.go            #   Action 类型（Agent↔Tool 协议）
-│   │   ├── loop_test.go
-│   │   └── state_test.go
-│   ├── llm/                     # LLM 抽象层
-│   │   ├── interface.go         #   Provider 接口
-│   │   ├── openai.go            #   OpenAI 实现
-│   │   ├── mock.go              #   Mock 实现
-│   │   ├── mock_test.go
-│   │   └── types.go             #   Message, Response
-│   ├── tools/                   # 工具系统
-│   │   ├── registry.go          #   注册表
-│   │   ├── tool.go              #   Tool 接口
-│   │   ├── file.go              #   文件工具
-│   │   ├── shell.go             #   Shell 工具
-│   │   ├── test.go              #   测试工具
-│   │   ├── registry_test.go
-│   ├── governance/              # 治理（★ 深入维度）
-│   │   ├── evaluator.go         #   评估管线
-│   │   ├── risk.go              #   风险分类
-│   │   ├── policy.go            #   策略引擎 + 规则
-│   │   ├── boundary.go          #   执行边界（路径/环境/网络）
-│   │   ├── control.go           #   执行控制（超时）
-│   │   ├── hitl.go              #   HITL 状态机
-│   │   ├── auth.go              #   GovernanceAuth
-│   │   ├── audit.go             #   审计日志
-│   │   ├── decision.go          #   GovernanceDecision 类型
-│   │   ├── evaluator_test.go
-│   │   ├── hitl_test.go
-│   │   ├── policy_test.go
+│   ├── protocol/                   # 共享类型定义（所有 domain 包的唯一公共依赖）
+│   │   ├── action.go               #   Action, ActionStatus, NewAction
+│   │   ├── result.go               #   ToolResult, NewSuccessResult, NewErrorResult
+│   │   └── doc.go                  #   包文档
+│   ├── agent/                      # Agent 状态机
+│   │   ├── state.go                #   AgentState（7 状态 + 合法转换表 + TransitionTo）
+│   │   ├── action.go               #   Action 类型别名（→ protocol.Action）
+│   │   ├── observation.go          #   Observation 类型
+│   │   ├── state_test.go
+│   │   ├── action_test.go
+│   │   ├── observation_test.go
+│   │   └── doc.go
+│   ├── llm/                        # LLM 抽象层
+│   │   ├── provider.go             #   Provider 接口 + ProviderFunc
+│   │   ├── message.go              #   Message, Response, ToolCall, Role, FinishReason
+│   │   ├── mock.go                 #   MockProvider（序列模式 + 函数模式）
+│   │   ├── openai.go               #   OpenAI Provider（待实现）
+│   │   ├── provider_test.go
+│   │   ├── message_test.go
+│   │   ├── openai_test.go
+│   │   └── doc.go
+│   ├── tools/                      # 工具系统
+│   │   ├── interface.go            #   Tool 接口 + Registry（Register/Get/List）
+│   │   ├── shell.go                #   ShellTool（命令执行 + 30s 超时）
+│   │   ├── file.go                 #   FileTool（读写文件 + 路径沙箱校验）
+│   │   ├── governed.go             #   GitTool（安全 git 命令白名单）
+│   │   ├── result.go               #   ToolResult（工具内部使用）
+│   │   ├── interface_test.go
+│   │   ├── shell_test.go
+│   │   ├── file_test.go
+│   │   ├── governed_test.go
+│   │   ├── result_test.go
+│   │   └── doc.go
+│   ├── governance/                 # 治理（★ 深入维度）
+│   │   ├── pipeline.go             #   Pipeline（五层评估管线 + Evaluate/ApproveHITL/RejectHITL）
+│   │   ├── schema.go               #   SchemaValidator（第 1 层）
+│   │   ├── types.go                #   RiskLevel, GovernanceAuth, StageResult, PipelineResult, GovernanceContext
+│   │   ├── audit.go                #   GovernanceDecision, AuditLogEntry, RedactSensitive
+│   │   ├── policy.go               #   PolicyEngine（第 3 层：规则匹配）
+│   │   ├── boundary.go             #   ExecutionBoundary（第 4 层：路径沙箱）
+│   │   ├── pipeline_test.go
+│   │   ├── types_test.go
 │   │   ├── audit_test.go
-│   │   └── auth_test.go
-│   ├── feedback/                # 反馈闭环
-│   │   ├── test_parser.go       #   go test 解析器
-│   │   ├── shell_parser.go      #   Shell 解析器
-│   │   ├── observation.go       #   Observation 类型
-│   │   ├── test_parser_test.go
-│   │   └── shell_parser_test.go
-│   ├── memory/                  # 记忆
-│   │   ├── store.go             #   存储接口 + JSON 实现
-│   │   ├── retriever.go         #   检索器
-│   │   ├── entry.go             #   MemoryEntry 类型
+│   │   └── doc.go
+│   ├── feedback/                   # 反馈闭环
+│   │   ├── feedback.go             #   FeedbackProcessor, ParseShellResult, ParseTestOutput, FeedbackObservation
+│   │   ├── feedback_test.go
+│   │   └── doc.go
+│   ├── memory/                     # 记忆
+│   │   ├── entry.go                #   MemoryEntry 类型
+│   │   ├── store.go                #   FileStore（JSON 文件持久化）
+│   │   ├── retriever.go            #   Retriever（关键词评分检索 + MinScore 阈值）
+│   │   ├── entry_test.go
 │   │   ├── store_test.go
-│   │   └── retriever_test.go
-│   ├── runtime/                  # 运行时（Task Manager）
-│   │   └── task.go               #   Task 创建、状态跟踪、goroutine 管理
-│   ├── config/                  # 配置
-│   │   ├── config.go            #   加载 + 校验
-│   │   └── config_test.go
-│   └── credential/              # 凭据安全
-│       ├── store.go             #   CredentialStore 接口
-│       ├── keychain.go          #   OS Keychain 实现
-│       ├── env.go               #   环境变量兼容实现
-│       ├── store_test.go
-│       └── redact.go            #   敏感信息脱敏
-├── web/                         # WebUI
-│   ├── server.go                #   HTTP 服务
-│   ├── handler.go               #   API 路由
-│   └── static/                  #   前端资源（go:embed）
-│       ├── index.html
-│       ├── style.css
-│       └── app.js
-├── config.example.yaml          # 配置示例
-├── Dockerfile
-├── Makefile
+│   │   ├── retriever_test.go
+│   │   └── doc.go
+│   ├── runtime/                    # 运行时（Composition Root）
+│   │   ├── loop.go                 #   AgentLoop（主循环：Think→Decide→Act→Observe）
+│   │   ├── task.go                 #   TaskManager（异步任务：Submit/Get/Cancel/List/Wait）
+│   │   ├── loop_test.go
+│   │   ├── task_test.go
+│   │   └── doc.go
+│   ├── cli/                        # CLI 薄封装
+│   │   ├── cli.go                  #   CLI（Run/Submit/Status/List/Cancel），仅导入 runtime
+│   │   ├── cli_test.go
+│   │   └── doc.go
+│   ├── web/                        # WebUI HTTP 服务
+│   │   ├── web.go                  #   Server（POST/GET/DELETE /tasks），仅导入 runtime
+│   │   ├── web_test.go
+│   │   └── doc.go
+│   ├── config/                     # 配置（待实现）
+│   │   └── doc.go
+│   └── credential/                 # 凭据安全（待实现）
+│       └── doc.go
+├── tests/
+│   └── demo/
+│       └── phase13_demo_test.go    # 5 个 Demo 测试
+├── web/static/                     # WebUI 静态资源（待实现）
+├── build/                          # 构建产物（.gitignore）
+├── config.example.yaml             # 配置模板
+├── .env.example                    # 环境变量模板
+├── Dockerfile                      # 容器构建
+├── Makefile                        # 构建脚本
+├── .gitlab-ci.yml                  # CI/CD 配置
 ├── go.mod
 ├── go.sum
 ├── .gitignore
-├── .gitlab-ci.yml
 ├── README.md
-├── SPEC.md
+├── SPEC.md                         # 本文档
 ├── PLAN.md
 ├── SPEC_PROCESS.md
 ├── AGENT_LOG.md
