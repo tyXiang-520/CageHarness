@@ -178,6 +178,11 @@ func (tm *TaskManager) List() []*Task {
 	return result
 }
 
+// Wait blocks until all submitted tasks have completed.
+func (tm *TaskManager) Wait() {
+	tm.wg.Wait()
+}
+
 // run executes the task function and updates the task status.
 func (tm *TaskManager) run(ctx context.Context, t *Task, fn TaskFunc) {
 	defer tm.wg.Done()

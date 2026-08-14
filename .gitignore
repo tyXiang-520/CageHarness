@@ -30,4 +30,5 @@ vendor/
 *.out
 
 # Coverage
-coverage.*
+coverage.*harness.exe
+harness.exe
