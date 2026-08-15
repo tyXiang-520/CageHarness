@@ -19,7 +19,7 @@ CageHarness 是南京大学 AI4SE 课程期末项目。它从零实现了一个 
 | Linux (arm64) | `harness-linux-arm64` | [下载](https://github.com/tyXiang-520/CageHarness/releases/latest/download/harness-linux-arm64) |
 | Docker | `ghcr.io/tyxiang-520/cageharness` | `docker pull ghcr.io/tyxiang-520/cageharness:latest` |
 
-🌐 **在线 Demo（WebUI）**：[COS 香港节点](https://cageharness-1468764621.cos.ap-hongkong.myqcloud.com/index.html)
+🌐 **在线 Demo（WebUI）**：[cageharness.site](https://cageharness.site/)
 　 API 后端：[SCF 香港节点](https://1468764621-7o4wyjg0oj.ap-hongkong.tencentscf.com/tasks)
 
 ---
@@ -160,17 +160,18 @@ docker pull ghcr.io/tyxiang-520/cageharness:latest
 docker run -p 8080:8080 ghcr.io/tyxiang-520/cageharness:latest
 ```
 
-### 部署到腾讯云（COS + SCF）
+### 部署到腾讯云（自定义域名 + COS + SCF）
 
-在线 Demo 采用"静态页面 + 无服务器 API"架构：
+在线 Demo 采用"自定义域名 + 静态页面 + 无服务器 API"架构：
 
-1. **WebUI 页面**（`docs/index.html`）上传到腾讯云 COS 存储桶（香港，公有读）
+1. **WebUI 页面**（`docs/index.html`）上传到腾讯云 COS 存储桶（香港，公有读），并开启静态网站托管（索引文档 `index.html`）
 2. **API 后端**（`build/harness-scf.zip`，内含 Linux amd64 静态二进制 `scf_bootstrap`）部署到腾讯云 SCF Web 函数（香港），设置环境变量 `PORT=9000`
-3. 页面通过 CORS（`Access-Control-Allow-Origin: *`）跨域调用 SCF API
+3. **自定义域名**（`cageharness.site`）：在 COS 域名管理中绑定静态网站源站，DNSPod 添加 CNAME 解析，绑定免费 SSL 证书并开启强制 HTTPS
+4. 页面通过 CORS（`Access-Control-Allow-Origin: *`）跨域调用 SCF API
 
-> ⚠️ SCF 默认域名（`*.tencentscf.com`）的网关会对所有响应强制添加
-> `Content-Disposition: attachment`，导致 HTML 被浏览器下载而非渲染，
-> 因此 WebUI 页面托管于 COS、SCF 仅作 API 后端。详见"已知限制"。
+> ⚠️ 必须使用自定义域名：腾讯云自 2024 年 1 月起对默认域名（`*.myqcloud.com`，
+> 含静态网站域名）与 SCF 默认域名强制添加 `Content-Disposition: attachment`，
+> HTML 会被浏览器下载而非渲染；自定义域名不受此限制。详见"已知限制"。
 
 ---
 
@@ -277,7 +278,7 @@ go test ./tests/demo/ -v -run "TestDemo" -count=1
 
 | 限制 | 说明 |
 |------|------|
-| SCF 默认域名强制 `Content-Disposition: attachment` | 腾讯云 SCF 网关对所有响应（含 HTML）强制附加该头，浏览器会下载而非渲染页面；因此在线 Demo 的 WebUI 托管于 COS，SCF 仅作 API 后端。应用代码层已显式设置 `inline`，但网关会覆盖之 |
+| COS/SCF 默认域名强制 `Content-Disposition: attachment` | 腾讯云自 2024 年 1 月起对 COS 默认域名（含静态网站域名）与 SCF 默认域名的所有响应强制附加该头，HTML 会被浏览器下载而非渲染。在线 Demo 已通过绑定自定义域名（`cageharness.site`）解决；应用代码层也已显式设置 `inline` 作为纵深防御 |
 | 线上 Demo 未配置真实 LLM key | 为避免凭据上云，在线实例未配置真实 API key：提交任务会得到"未配置 API key"提示（这本身是凭据边界的预期行为）。机制演示（治理拦截、反馈闭环）请运行本地 mock 测试：`go test ./tests/demo/ -v -count=1` |
 | GitTool 白名单范围 | 仅支持 `status/diff/log/branch/add/commit` 六个只读/本地命令，不包含 push 等远端写操作；参数校验尚未覆盖 `--force` 等危险 flag 的单独拒绝 |
 | Windows 无法运行 race detector | 单元测试依赖 `go test -race` 需 gcc，Windows 环境缺少；并发安全通过结构设计（RWMutex + copy-on-read）保障，CI 在 Linux 上运行完整测试 |
