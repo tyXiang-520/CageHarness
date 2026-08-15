@@ -199,6 +199,21 @@
 <script>
 const SCF_URL = 'https://1468764621-7o4wyjg0oj.ap-hongkong.tencentscf.com';
 	const API = SCF_URL + '/tasks';
+
+// 匿名访客 ID：每个浏览器生成一次并持久化，任务列表按它隔离。
+// 注意：这是隐私隔离而非鉴权，任何人都可以伪造 ID。
+const VISITOR_ID = (() => {
+  let id = null;
+  try { id = localStorage.getItem('cageharness-visitor'); } catch (e) {}
+  if (!id) {
+    id = (crypto.randomUUID && crypto.randomUUID())
+      || ('v-' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+    try { localStorage.setItem('cageharness-visitor', id); } catch (e) {}
+  }
+  return id;
+})();
+const VISITOR_HEADERS = { 'X-Visitor-ID': VISITOR_ID };
+
 let refreshTimer = null;
 let selectedTaskId = null;
 
@@ -211,7 +226,7 @@ document.getElementById('task-form').addEventListener('submit', async (e) => {
   try {
     const resp = await fetch(API, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Visitor-ID': VISITOR_ID },
       body: JSON.stringify({ task })
     });
     if (!resp.ok) {
@@ -230,7 +245,7 @@ document.getElementById('task-form').addEventListener('submit', async (e) => {
 
 async function fetchTasks() {
   try {
-    const resp = await fetch(API);
+    const resp = await fetch(API, { headers: VISITOR_HEADERS });
     if (!resp.ok) return;
     const tasks = await resp.json();
     renderTasks(tasks);
@@ -298,7 +313,7 @@ function selectTask(id) {
   fetchTasks(); // re-render to highlight
 
   // Fetch single task to get run_result details
-  fetch(API + '/' + id)
+  fetch(API + '/' + id, { headers: VISITOR_HEADERS })
     .then(r => r.json())
     .then(t => renderDetail(t))
     .catch(err => console.error('selectTask:', err));
@@ -412,7 +427,7 @@ function renderDetail(task) {
 
 async function cancelTask(id) {
   try {
-    const resp = await fetch(API + '/' + id, { method: 'DELETE' });
+    const resp = await fetch(API + '/' + id, { method: 'DELETE', headers: VISITOR_HEADERS });
     if (!resp.ok) {
       const err = await resp.json();
       alert('Error: ' + (err.error || resp.statusText));

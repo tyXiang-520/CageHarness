@@ -60,6 +60,12 @@ type Task struct {
 	CreatedAt time.Time
 	UpdatedAt time.Time
 
+	// Owner identifies the visitor who submitted the task (WebUI isolation).
+	// An empty owner means the task was submitted without a visitor ID
+	// (e.g., by the CLI or curl). Isolation is privacy-by-default, not
+	// authentication: anyone can forge a visitor ID.
+	Owner string
+
 	// Rich observability data (populated when using SubmitWithResult)
 	RunResult *RunResult `json:"run_result,omitempty"`
 }
@@ -111,6 +117,13 @@ func NewTaskManager() *TaskManager {
 // Submit creates a new task and starts executing it asynchronously.
 // The returned task ID can be used to query status or cancel the task.
 func (tm *TaskManager) Submit(parentCtx context.Context, task string, fn TaskFunc) string {
+	return tm.SubmitWithOwner(parentCtx, "", task, fn)
+}
+
+// SubmitWithOwner creates a new task owned by the given owner and starts
+// executing it asynchronously. The owner is used by the WebUI to isolate
+// visitors' task lists (see ListByOwner).
+func (tm *TaskManager) SubmitWithOwner(parentCtx context.Context, owner, task string, fn TaskFunc) string {
 	id := tm.nextID()
 	now := time.Now()
 
@@ -120,6 +133,7 @@ func (tm *TaskManager) Submit(parentCtx context.Context, task string, fn TaskFun
 		Status:    TaskStatusPending,
 		CreatedAt: now,
 		UpdatedAt: now,
+		Owner:     owner,
 	}
 
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -139,6 +153,12 @@ func (tm *TaskManager) Submit(parentCtx context.Context, task string, fn TaskFun
 // The task function returns a RunResult containing rich observability data
 // (state transitions, audit log, etc.) that is stored in the Task.
 func (tm *TaskManager) SubmitWithResult(parentCtx context.Context, task string, fn TaskFuncWithResult) string {
+	return tm.SubmitWithResultOwner(parentCtx, "", task, fn)
+}
+
+// SubmitWithResultOwner creates a new task owned by the given owner and
+// starts executing it asynchronously, storing rich observability data.
+func (tm *TaskManager) SubmitWithResultOwner(parentCtx context.Context, owner, task string, fn TaskFuncWithResult) string {
 	id := tm.nextID()
 	now := time.Now()
 
@@ -148,6 +168,7 @@ func (tm *TaskManager) SubmitWithResult(parentCtx context.Context, task string, 
 		Status:    TaskStatusPending,
 		CreatedAt: now,
 		UpdatedAt: now,
+		Owner:     owner,
 	}
 
 	ctx, cancel := context.WithCancel(parentCtx)
@@ -208,6 +229,22 @@ func (tm *TaskManager) List() []*Task {
 	for _, t := range tm.tasks {
 		cp := *t
 		result = append(result, &cp)
+	}
+	return result
+}
+
+// ListByOwner returns only the tasks owned by the given owner.
+// Used by the WebUI so each visitor sees only their own task list.
+func (tm *TaskManager) ListByOwner(owner string) []*Task {
+	tm.mu.RLock()
+	defer tm.mu.RUnlock()
+
+	result := make([]*Task, 0)
+	for _, t := range tm.tasks {
+		if t.Owner == owner {
+			cp := *t
+			result = append(result, &cp)
+		}
 	}
 	return result
 }

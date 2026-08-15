@@ -284,6 +284,7 @@ go test ./tests/demo/ -v -run "TestDemo" -count=1
 | Windows 无法运行 race detector | 单元测试依赖 `go test -race` 需 gcc，Windows 环境缺少；并发安全通过结构设计（RWMutex + copy-on-read）保障，CI 在 Linux 上运行完整测试 |
 | 记忆检索为关键词评分 | 非向量语义检索：全查询命中 10 分、标签 8 分、单词 2–3 分，低于阈值（3 分）不注入。适用于 MVP 规模的条目数 |
 | 平台验证范围 | 本地构建验证于 Windows amd64；跨平台二进制（darwin/linux/arm64）由 CI 构建；线上 SCF 为 Linux amd64 静态二进制 |
+| 在线实例任务隔离为隐私隔离而非鉴权 | WebUI 按浏览器本地生成的匿名访客 ID（`X-Visitor-ID` 头）隔离任务列表，访客之间互不可见；但该 ID 可被伪造，不能作为安全边界，生产部署应加真实鉴权 |
 
 ## 许可证
 

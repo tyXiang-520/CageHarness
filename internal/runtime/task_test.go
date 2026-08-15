@@ -174,6 +174,48 @@ func TestTaskManager_List(t *testing.T) {
 	}
 }
 
+func TestTaskManager_ListByOwner(t *testing.T) {
+	tm := NewTaskManager()
+	ctx := context.Background()
+
+	// Default Submit uses the empty owner
+	tm.Submit(ctx, "no-owner", func(ctx context.Context) (string, error) {
+		return "", nil
+	})
+	tm.SubmitWithOwner(ctx, "alice", "alice-task", func(ctx context.Context) (string, error) {
+		return "", nil
+	})
+	tm.SubmitWithOwner(ctx, "bob", "bob-task", func(ctx context.Context) (string, error) {
+		return "", nil
+	})
+
+	tm.wg.Wait()
+
+	// Full list contains everything
+	if got := len(tm.List()); got != 3 {
+		t.Errorf("List should return 3 tasks, got %d", got)
+	}
+
+	// Per-owner views are isolated
+	alice := tm.ListByOwner("alice")
+	if len(alice) != 1 || alice[0].Task != "alice-task" {
+		t.Errorf("alice should see only her task, got %v", alice)
+	}
+	bob := tm.ListByOwner("bob")
+	if len(bob) != 1 || bob[0].Task != "bob-task" {
+		t.Errorf("bob should see only his task, got %v", bob)
+	}
+	empty := tm.ListByOwner("")
+	if len(empty) != 1 || empty[0].Task != "no-owner" {
+		t.Errorf("empty owner should see only the ownerless task, got %v", empty)
+	}
+
+	// Owner is stored on the task itself
+	if alice[0].Owner != "alice" {
+		t.Errorf("expected owner alice, got %q", alice[0].Owner)
+	}
+}
+
 func TestTaskManager_Concurrency(t *testing.T) {
 	// Verify concurrent task creation is safe
 	tm := NewTaskManager()

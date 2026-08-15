@@ -62,7 +62,7 @@ func corsMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, X-Visitor-ID")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -71,6 +71,17 @@ func corsMiddleware(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+// visitorID extracts the anonymous visitor identifier from the request.
+//
+// Isolation model: the WebUI frontend generates a random ID per browser
+// (localStorage) and sends it as X-Visitor-ID. Tasks are stored with their
+// owner and the list/status/cancel endpoints only serve the caller's own
+// tasks. This is privacy-by-default, NOT authentication: a caller can forge
+// any ID. Requests without the header share the empty-owner namespace.
+func visitorID(r *http.Request) string {
+	return r.Header.Get("X-Visitor-ID")
 }
 
 // handleIndex serves the embedded WebUI HTML page.
@@ -172,7 +183,7 @@ func (s *Server) submitTask(w http.ResponseWriter, r *http.Request) {
 	// Gate C: Use context.Background() for task lifecycle.
 	// The HTTP request context (r.Context()) is only for reading the request body.
 	// client disconnect → HTTP handler returns → Task continues in background.
-	taskID := s.taskManager.SubmitWithResult(context.Background(), req.Task, func(ctx context.Context) runtime.RunResult {
+	taskID := s.taskManager.SubmitWithResultOwner(context.Background(), visitorID(r), req.Task, func(ctx context.Context) runtime.RunResult {
 		return s.loop.RunWithResult(ctx, req.Task)
 	})
 
@@ -186,7 +197,8 @@ func (s *Server) submitTask(w http.ResponseWriter, r *http.Request) {
 // getTask handles GET /tasks/{id}.
 func (s *Server) getTask(w http.ResponseWriter, r *http.Request, id string) {
 	task, ok := s.taskManager.Get(id)
-	if !ok {
+	if !ok || task.Owner != visitorID(r) {
+		// Owner mismatch is reported as 404 so task IDs cannot be probed.
 		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
 		return
 	}
@@ -197,7 +209,7 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request, id string) {
 
 // listTasks handles GET /tasks.
 func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
-	tasks := s.taskManager.List()
+	tasks := s.taskManager.ListByOwner(visitorID(r))
 
 	w.Header().Set("Content-Type", "application/json")
 	responses := make([]taskResponse, 0, len(tasks))
@@ -209,6 +221,11 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 
 // cancelTask handles DELETE /tasks/{id}.
 func (s *Server) cancelTask(w http.ResponseWriter, r *http.Request, id string) {
+	task, ok := s.taskManager.Get(id)
+	if !ok || task.Owner != visitorID(r) {
+		http.Error(w, `{"error":"task not found"}`, http.StatusNotFound)
+		return
+	}
 	if err := s.taskManager.Cancel(id); err != nil {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusNotFound)
 		return

@@ -94,6 +94,96 @@ func TestWebUI_IndexServesInlineHTML(t *testing.T) {
 	}
 }
 
+// TestWebUI_VisitorIsolation verifies that tasks submitted by one visitor
+// are invisible to another: list is filtered by owner, and GET/DELETE on a
+// foreign task returns 404 (so IDs cannot be probed).
+func TestWebUI_VisitorIsolation(t *testing.T) {
+	srv := setupTestServer(t)
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	post := func(visitor, body string) {
+		req, err := http.NewRequest("POST", ts.URL+"/tasks", strings.NewReader(body))
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Visitor-ID", visitor)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("POST /tasks failed: %v", err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusAccepted {
+			t.Fatalf("expected 202, got %d", resp.StatusCode)
+		}
+	}
+
+	list := func(visitor string) []map[string]any {
+		req, err := http.NewRequest("GET", ts.URL+"/tasks", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		req.Header.Set("X-Visitor-ID", visitor)
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET /tasks failed: %v", err)
+		}
+		defer resp.Body.Close()
+		var tasks []map[string]any
+		if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
+			t.Fatalf("decode tasks: %v", err)
+		}
+		return tasks
+	}
+
+	// Visitor A submits one task, visitor B submits one task
+	post("visitor-a", `{"task":"task from A"}`)
+	post("visitor-b", `{"task":"task from B"}`)
+
+	// A sees only their own task
+	aTasks := list("visitor-a")
+	if len(aTasks) != 1 || aTasks[0]["task"] != "task from A" {
+		t.Errorf("visitor A should see only their own task, got %v", aTasks)
+	}
+
+	// B sees only their own task
+	bTasks := list("visitor-b")
+	if len(bTasks) != 1 || bTasks[0]["task"] != "task from B" {
+		t.Errorf("visitor B should see only their own task, got %v", bTasks)
+	}
+
+	// No visitor ID sees only the empty-owner namespace (nothing here)
+	if none := list(""); len(none) != 0 {
+		t.Errorf("empty visitor should see no tasks, got %v", none)
+	}
+
+	// A cannot fetch B's task by ID — must 404, not leak existence
+	bID := bTasks[0]["id"].(string)
+	req, _ := http.NewRequest("GET", ts.URL+"/tasks/"+bID, nil)
+	req.Header.Set("X-Visitor-ID", "visitor-a")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET foreign task failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("foreign task GET should be 404, got %d", resp.StatusCode)
+	}
+
+	// A cannot cancel B's task either
+	req, _ = http.NewRequest("DELETE", ts.URL+"/tasks/"+bID, nil)
+	req.Header.Set("X-Visitor-ID", "visitor-a")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("DELETE foreign task failed: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("foreign task DELETE should be 404, got %d", resp.StatusCode)
+	}
+}
+
 func TestWebUI_SubmitTask(t *testing.T) {
 	// Gate B: POST /tasks returns task_id, does not block waiting for LLM
 	srv := setupTestServer(t)
